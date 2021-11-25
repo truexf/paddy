@@ -167,7 +167,6 @@ func (m *Paddy) RegisterPlugin(vhost string, plugin Plugin) {
 }
 
 func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
-	// todo
 	if !goutil.FileExists(m.configFile) {
 		return goutil.NewErrorf(ErrCodeConfigNotExist, ErrMsgConfigNotExist, configFile)
 	}
@@ -175,6 +174,7 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
 	if err != nil {
 		return goutil.NewErrorf(ErrCodeConfigReadFail, ErrMsgConfigReadFail, configFile, err.Error())
 	}
+	bts = []byte(TrimJsonComment(string(bts)))
 	cfgMap := make(map[string]interface{})
 	err = json.Unmarshal(bts, &cfgMap)
 	if err != nil {

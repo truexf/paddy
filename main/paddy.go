@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/golang/glog"
 	"github.com/truexf/goutil"
 	"github.com/truxf/paddy"
 )
@@ -23,8 +25,7 @@ var (
 
 func main() {
 	flag.Parse()
-
-	InitLog()
+	ReSetLogConf()
 
 	evn := os.Environ()
 	isRestart := false
@@ -43,19 +44,15 @@ func main() {
 
 	signalDef()
 
-	cfgFile := *configFile
-	if cfgFile == "" {
-		cfgFile = filepath.Join(goutil.GetExePath(), "default.config")
-	}
-	s, err := paddy.NewPaddy(cfgFile)
+	s, err := paddy.NewPaddy(getConfigFile())
 	if err.Code == paddy.ErrCodeNoError {
 		instance = s
 	} else {
-		Log(err.Error())
+		glog.Errorln(err.Error())
 		return
 	}
 	if err := instance.StartListen(); err.Code != paddy.ErrCodeNoError {
-		Log(err.Error())
+		glog.Errorln(err.Error())
 		return
 	}
 
@@ -63,15 +60,35 @@ func main() {
 	<-c
 }
 
-func InitLog() {
-	//todo
+func ReSetLogConf() {
+	configMap := make(map[string]interface{})
+	if bts, err := os.ReadFile(getConfigFile()); err == nil {
+		if err := json.Unmarshal([]byte(paddy.TrimJsonComment(string(bts))), &configMap); err == nil {
+			if logDir, ok := configMap[paddy.CfgLogDir]; ok {
+				logDirStr := goutil.GetStringValue(logDir)
+				if goutil.FilePathExists(logDirStr) {
+					flag.Set("log_dir", logDirStr)
+				}
+			}
+			if logLevel, ok := configMap[paddy.CfgLogLevel]; ok {
+				logLevelInt := goutil.GetIntValueDefault(logLevel, 3)
+				flag.Set("v", strconv.Itoa(int(logLevelInt)))
+			}
+		}
+	}
 }
 
-func Log(s string) {
-	//todo
-}
-func FlushLog() {
-	//todo
+func getConfigFile() string {
+	ret := ""
+	if *configFile == "" {
+		ret = filepath.Join(goutil.GetExePath(), "default.config")
+	} else {
+		ret, _ = filepath.Abs(*configFile)
+		if !goutil.FileExists(ret) {
+			ret = filepath.Join(goutil.GetExePath(), "default.config")
+		}
+	}
+	return ret
 }
 
 func daemonize() error {
@@ -124,23 +141,22 @@ func signalDef() {
 			sig := <-cSignal
 			switch sig {
 			case syscall.SIGTERM, syscall.SIGINT:
-				Log(fmt.Sprintf("%s,received signal %d, terminate process\n", time.Now().Format("2006-01-02 15:04:05"), sig))
-				FlushLog()
+				glog.Errorf("%s,received signal %d, terminate process\n", time.Now().Format("2006-01-02 15:04:05"), sig)
+				glog.Flush()
 				signal.Stop(cSignal)
 				os.Exit(-1)
 			case syscall.SIGUSR1:
-				Log(fmt.Sprintf("%s,received signal SIGUSR1, close process\n", time.Now().Format("2006-01-02 15:04:05")))
-				FlushLog()
+				glog.Infof("%s,received signal SIGUSR1, close process\n", time.Now().Format("2006-01-02 15:04:05"))
+				glog.Flush()
 				signal.Stop(cSignal)
 				os.Exit(0)
 			case syscall.SIGUSR2:
-				signal.Stop(cSignal)
-				Log(fmt.Sprintf("%s,received signal SIGUSR2, restart process\n", time.Now().Format("2006-01-02 15:04:05")))
+				glog.Infof("%s,received signal SIGUSR2, restart process\n", time.Now().Format("2006-01-02 15:04:05"))
 				if err := restartProcess(); err != nil {
-					Log(fmt.Sprintf("%s,received signal SIGUSR2, restart process fail, %s\n", time.Now().Format("2006-01-02 15:04:05"), err.Error()))
+					glog.Errorf("%s,received signal SIGUSR2, restart process fail, %s\n", time.Now().Format("2006-01-02 15:04:05"), err.Error())
 				}
 			case syscall.SIGHUP:
-				Log(fmt.Sprintf("%s,received signal SIGHUP, ignore", time.Now().Format("2006-01-02 15:04:05")))
+				glog.Infof(fmt.Sprintf("%s,received signal SIGHUP, ignore", time.Now().Format("2006-01-02 15:04:05")))
 			}
 		}
 	}()

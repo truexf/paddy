@@ -47,6 +47,8 @@ const (
 )
 
 const (
+	CfgLogDir                    = "log_dir"
+	CfgLogLevel                  = "log_level"
 	CfgInclude                   = "include"
 	CfgBackendGroup              = "backend_group"
 	CfgBackendDef                = "backend_def"
