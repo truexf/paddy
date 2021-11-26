@@ -3,17 +3,20 @@ package paddy
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net"
 	"net/http"
 	"os"
 	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 
+	"github.com/golang/glog"
 	"github.com/truexf/goutil"
 	"github.com/truexf/goutil/jsonexp"
 )
@@ -22,11 +25,14 @@ import (
 type Plugin interface {
 	// 唯一身份ID
 	ID() string
+
 	// 在http请求接收完成后介入
-	// hijacked 是否劫持，true则必须返回response作为替代响应
-	RequestCompleted(req *http.Request, context goutil.Context) (hijacked bool, response *http.Response, backend string, err error)
-	// 在响应生成完成后，发送给客户端之前介入， hijacked = true表示对response进行了修改
-	ResponseCompleted(req *http.Request, response *http.Response) (hijacked bool, err error)
+	// hijacked 是否劫持：true则必须实现respWriter写响应；false时不准向respWriter写响应，可以返回backend(此时框架直接去请求backend而不再走location匹配流程，否则框架执行location匹配)
+	RequestHeaderCompleted(req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, backend string, err goutil.Error)
+
+	// 框架在得到响应后，给客户端发送响应之前介入
+	// hijacked 是否劫持：true则必须实现respWriter写响应；false时，不准向respWriter写响应，可以返回newResponse(此时框架以newResponse写响应，否则以originResponse写响应）
+	ResponseHeaderCompleted(originResponse *http.Response, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, newResponse *http.Response, err goutil.Error)
 }
 
 type Backend struct {
@@ -98,8 +104,119 @@ type PaddyHandler struct {
 	paddy *Paddy
 }
 
-func (m *PaddyHandler) ServeHTTP(http.ResponseWriter, *http.Request) {
+func (m *PaddyHandler) pluginRequestAdapter(plugin Plugin, req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, backend string, err goutil.Error) {
+	defer func() {
+		if err := recover(); err != nil {
+			glog.Errorf("%s plugin request panic: %s", time.Now().String(), err)
+			buf := make([]byte, 81920)
+			n := runtime.Stack(buf, true)
+			if n > 0 {
+				buf = buf[:n]
+				glog.Errorln(string(buf))
+			} else {
+				glog.Errorln("no stack trace")
+			}
+			glog.Flush()
+		}
+	}()
+	return plugin.RequestHeaderCompleted(req, respWriter, context)
+}
+
+func (m *PaddyHandler) pluginResponseAdapter(plugin Plugin, originResponse *http.Response, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, newResponse *http.Response, err goutil.Error) {
+	defer func() {
+		if err := recover(); err != nil {
+			glog.Errorf("%s plugin response panic: %s", time.Now().String(), err)
+			buf := make([]byte, 81920)
+			n := runtime.Stack(buf, true)
+			if n > 0 {
+				buf = buf[:n]
+				glog.Errorln(string(buf))
+			} else {
+				glog.Errorln("no stack trace")
+			}
+			glog.Flush()
+		}
+	}()
+	return plugin.ResponseHeaderCompleted(originResponse, respWriter, context)
+}
+
+func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// todo
+	context := &goutil.DefaultContext{}
+	var hijacked bool
+	var backend string
+	var err goutil.Error
+	var resp *http.Response
+
+	for _, plugin := range m.paddy.plugin {
+		hijacked, backend, err = m.pluginRequestAdapter(plugin, r, w, context)
+		if err.Code != ErrCodeNoError {
+			glog.Errorf("call plugin request: %s fail,%d, %s", plugin.ID(), err.Code, err.Error())
+			w.WriteHeader(500)
+			return
+		}
+		if hijacked {
+			return
+		}
+		if backend != "" {
+			break
+		}
+	}
+
+	for {
+		if backend == "" {
+			backend, resp, err = m.paddy.doLocation(r, context)
+			if err.Code != ErrCodeNoError {
+				glog.Errorf("uri: %s, do location fail, %d, %s", r.RequestURI, err.Code, err.Error())
+				break
+			}
+			if backend == "" && resp == nil {
+				break
+			}
+		}
+
+		if resp == nil {
+			resp, err = m.paddy.doBackend(backend, r, context)
+			if err.Code != ErrCodeNoError {
+				glog.Errorf("uri: %s, do backend: %s fail, %d, %s", r.RequestURI, backend, err.Code, err.Error())
+				break
+			}
+		}
+
+		break
+	}
+
+	if err.Code != ErrCodeNoError {
+		w.WriteHeader(500)
+		return
+	}
+
+	for _, plugin := range m.paddy.plugin {
+		hijacked, resp, err = m.pluginResponseAdapter(plugin, resp, w, context)
+		if err.Code != ErrCodeNoError {
+			glog.Errorf("call plugin response: %s fail,%d, %s", plugin.ID(), err.Code, err.Error())
+			w.WriteHeader(500)
+			return
+		}
+		if hijacked {
+			return
+		}
+	}
+
+	if resp == nil {
+		w.WriteHeader(404)
+	} else {
+		w.WriteHeader(resp.StatusCode)
+		wHeader := w.Header()
+		for k, v := range resp.Header {
+			if len(v) > 0 {
+				wHeader.Set(k, v[0])
+			}
+		}
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			glog.Errorf("uri: %s, write response body fail, %s", r.RequestURI, err.Error())
+		}
+	}
 }
 
 // paddy web server
@@ -110,9 +227,7 @@ type Paddy struct {
 	backendDefs   map[string]*BackendDef
 	vServers      []*VirtualServer
 	configFile    string
-	// key是vhost域名, *代表全部, value是该域名下的插件列表
-	plugin     map[string]*[]Plugin
-	pluginLock sync.RWMutex
+	plugin        []Plugin
 }
 
 func NewPaddy(configFile string) (*Paddy, goutil.Error) {
@@ -132,38 +247,31 @@ func (m *Paddy) init() {
 	m.backendGroups = make(map[string]*BackendGroup)
 	m.backendDefs = make(map[string]*BackendDef)
 	m.vServers = make([]*VirtualServer, 0)
-	m.plugin = make(map[string]*[]Plugin)
+	m.plugin = make([]Plugin, 0)
 }
 
 func (m *Paddy) GetConfigFile() string {
 	return m.configFile
 }
 
-func (m *Paddy) RegisterPlugin(vhost string, plugin Plugin) {
-	if vhost == "" || plugin == nil {
-		return
-	}
-	m.pluginLock.Lock()
-	defer m.pluginLock.Unlock()
-	arrPtr, ok := m.plugin[vhost]
-	if !ok {
-		arr := make([]Plugin, 0)
-		arrPtr = &arr
-	}
-	arr := *arrPtr
-	exists := false
-	for _, v := range arr {
+func (m *Paddy) RegisterPlugin(plugin Plugin) goutil.Error {
+	for _, v := range m.plugin {
 		if v.ID() == plugin.ID() {
-			exists = true
-			break
+			return goutil.NewErrorf(ErrCodePluginDup, ErrMsgPluginDup, v.ID())
 		}
 	}
-	if exists {
-		return
-	}
-	arr = append(arr, plugin)
-	arrPtr = &arr
-	m.plugin[vhost] = arrPtr
+	m.plugin = append(m.plugin, plugin)
+	return ErrorNoError
+}
+
+func (m *Paddy) doLocation(r *http.Request, context goutil.Context) (backend string, response *http.Response, err goutil.Error) {
+	// todo
+	return "", nil, ErrorNoError
+}
+
+func (m *Paddy) doBackend(backend string, r *http.Request, context goutil.Context) (response *http.Response, err goutil.Error) {
+	// todo
+	return nil, ErrorNoError
 }
 
 func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
