@@ -33,6 +33,10 @@ const (
 	ErrCodeCfgItem3Invalid     = 111
 	ErrMsgCfgItem3Invalid      = "config item: %s.%s.%s is invalid"
 	ErrCodeListenFail          = 112
+	ErrCodePluginDup           = 113
+	ErrMsgPluginDup            = "plugin %s duplicated"
+	ErrCodeDemo                = 114
+	ErrMsgDemo                 = "demo error %s"
 )
 
 var AllMethods = []string{MethodRandom, MethodRoundrobin, MethodMinPending, MethodJsonExp, MethodIpHash, MethodUrlParam}
