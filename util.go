@@ -1,6 +1,10 @@
 package paddy
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/truexf/goutil/lblhttpclient"
+)
 
 func SplitByLine(s string) (ret []string) {
 	if s == "" {
@@ -44,4 +48,23 @@ func TrimJsonComment(jsn string) string {
 		sRet += v
 	}
 	return sRet
+}
+
+func MethodStrToI(ms string) lblhttpclient.LoadBalanceMethod {
+	iMethod := lblhttpclient.MethodMinPending
+	switch ms {
+	case MethodIpHash:
+		iMethod = lblhttpclient.MethodIpHash
+	case MethodJsonExp:
+		iMethod = lblhttpclient.MethodJsonExp
+	case MethodRandom:
+		iMethod = lblhttpclient.MethodRandom
+	case MethodRoundrobin:
+		iMethod = lblhttpclient.MethodRoundrobin
+	case MethodUrlParam:
+		iMethod = lblhttpclient.MethodUrlParam
+	case MethodMinPending:
+		iMethod = lblhttpclient.MethodMinPending
+	}
+	return iMethod
 }

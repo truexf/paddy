@@ -1,9 +1,17 @@
+// Copyright 2021 fangyousong(方友松). All rights reserved.
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file.
+
 package paddy
 
 import "github.com/truexf/goutil"
 
 var (
 	ErrorNoError = goutil.NewError(ErrCodeNoError, "")
+
+	DefaultBackendMaxIdleConn         = 10
+	DefaultBackendWaitResponseTimeout = 2000
+	DefaultBackendConnTimeout         = 3000
 )
 
 const (
@@ -37,6 +45,8 @@ const (
 	ErrMsgPluginDup            = "plugin %s duplicated"
 	ErrCodeDemo                = 114
 	ErrMsgDemo                 = "demo error %s"
+	ErrCodeJsonexpExecute      = 115
+	ErrMsgJsonexpExecute       = "execute jsonexp fail, %s"
 )
 
 var AllMethods = []string{MethodRandom, MethodRoundrobin, MethodMinPending, MethodJsonExp, MethodIpHash, MethodUrlParam}
@@ -51,17 +61,19 @@ const (
 )
 
 const (
-	CfgLogDir                    = "log_dir"
-	CfgLogLevel                  = "log_level"
-	CfgInclude                   = "include"
-	CfgBackendGroup              = "backend_group"
-	CfgBackendDef                = "backend_def"
-	CfgBackendDefAlias           = "alias"
-	CfgBackendDefGroupList       = "group_list"
-	CfgBackendDefBackendList     = "backend_list"
-	CfgBackendDefBackendMethend  = "method"
-	CfgBackendDefBackendParamkey = "param_key"
-	CfgBackendDefJsonexp         = "jsonexp"
+	CfgLogDir                        = "log_dir"
+	CfgLogLevel                      = "log_level"
+	CfgInclude                       = "include"
+	CfgBackendGroup                  = "backend_group"
+	CfgBackendDef                    = "backend_def"
+	CfgBackendDefAlias               = "alias"
+	CfgBackendDefGroupList           = "group_list"
+	CfgBackendDefBackendList         = "backend_list"
+	CfgBackendDefBackendMethend      = "method"
+	CfgBackendDefBackendParamkey     = "param_key"
+	CfgBackendDefJsonexp             = "jsonexp"
+	CfgBackendDefMaxIdleConn         = "max_idle_conn"
+	CfgBackendDefWaitResponseTimeout = "wait_response_timeout"
 
 	CfgServer                              = "server"
 	CfgServerListen                        = "listen"
@@ -83,4 +95,8 @@ const (
 
 const (
 	EnvVarInheritedListener = "inherited_listener"
+)
+
+const (
+	ContextVarResponseFilter = "__response_filter__"
 )

@@ -1,3 +1,7 @@
+// Copyright 2021 fangyousong(方友松). All rights reserved.
+// Use of this source code is governed by a MIT-style
+// license that can be found in the LICENSE file.
+
 package paddy
 
 import (
@@ -19,6 +23,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/truexf/goutil"
 	"github.com/truexf/goutil/jsonexp"
+	"github.com/truexf/goutil/lblhttpclient"
 )
 
 // 插件接口
@@ -47,12 +52,15 @@ type BackendGroup struct {
 }
 
 type BackendDef struct {
-	Alias            string
-	BackendList      []Backend
-	backendGroupList []string
-	Method           string
-	ParamKey         string
-	JsonExp          *jsonexp.JsonExpGroup
+	Alias               string
+	BackendList         []Backend
+	backendGroupList    []string
+	Method              string
+	ParamKey            string
+	JsonExp             *jsonexp.JsonExpGroup
+	MaxIdleConn         int
+	WaitResponseTiemout time.Duration
+	lbClient            *lblhttpclient.LblHttpClient
 }
 
 type RegexpLocationItem struct {
@@ -141,9 +149,14 @@ func (m *PaddyHandler) pluginResponseAdapter(plugin Plugin, originResponse *http
 }
 
 func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// todo
+	if !m.paddy.ready {
+		w.WriteHeader(500)
+		w.Write([]byte("not ready"))
+		return
+	}
 	context := &goutil.DefaultContext{}
 	var hijacked bool
+	var done bool
 	var backend string
 	var err goutil.Error
 	var resp *http.Response
@@ -163,14 +176,30 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	context.SetCtxData(JsonExpObjRequestInstance, newRequestObj(r))
+	context.SetCtxData(JsonExpObjRequestHeaderInstance, newRequestHeaderObj(r))
+	context.SetCtxData(JsonExpObjRequestParamInstance, newRequestParamObj(r))
+
+	doLoop := true
 	for {
+		// only onece
+		if !doLoop {
+			break
+		} else {
+			doLoop = !doLoop
+		}
+
 		if backend == "" {
-			backend, resp, err = m.paddy.doLocation(r, context)
+			done, backend, resp, err = m.paddy.doLocation(r, w, context)
 			if err.Code != ErrCodeNoError {
 				glog.Errorf("uri: %s, do location fail, %d, %s", r.RequestURI, err.Code, err.Error())
 				break
 			}
+			if done {
+				return
+			}
 			if backend == "" && resp == nil {
+				resp = &http.Response{StatusCode: 404}
 				break
 			}
 		}
@@ -183,7 +212,6 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		break
 	}
 
 	if err.Code != ErrCodeNoError {
@@ -223,11 +251,13 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type Paddy struct {
 	handler       *PaddyHandler
 	jsonexpDict   *jsonexp.Dictionary
+	fileServer    *FileServer
 	backendGroups map[string]*BackendGroup
 	backendDefs   map[string]*BackendDef
 	vServers      []*VirtualServer
 	configFile    string
 	plugin        []Plugin
+	ready         bool
 }
 
 func NewPaddy(configFile string) (*Paddy, goutil.Error) {
@@ -242,12 +272,26 @@ func NewPaddy(configFile string) (*Paddy, goutil.Error) {
 }
 
 func (m *Paddy) init() {
+	m.fileServer = &FileServer{}
 	m.handler = &PaddyHandler{paddy: m}
 	m.jsonexpDict = jsonexp.NewDictionary()
+	m.initJsonexpDict()
 	m.backendGroups = make(map[string]*BackendGroup)
 	m.backendDefs = make(map[string]*BackendDef)
 	m.vServers = make([]*VirtualServer, 0)
 	m.plugin = make([]Plugin, 0)
+}
+
+func (m *Paddy) initJsonexpDict() {
+	m.jsonexpDict.RegisterVar(JsonExpVarBackend, nil)
+	m.jsonexpDict.RegisterVar(JsonExpVarFileRoot, nil)
+	m.jsonexpDict.RegisterVar(JsonExpVarSetResponse, nil)
+
+	m.jsonexpDict.RegisterObject(JsonExpObjRequest, &RequestObj{})
+	m.jsonexpDict.RegisterObject(JsonExpObjRequestHeader, &RequestHeaderObj{})
+	m.jsonexpDict.RegisterObject(JsonExpObjRequestParam, &RequestParamObj{})
+	m.jsonexpDict.RegisterObject(JsonExpObjResponse, &ResponseObj{})
+	m.jsonexpDict.RegisterObject(JsonExpObjResponseHeader, &ResponseHeaderObj{})
 }
 
 func (m *Paddy) GetConfigFile() string {
@@ -264,9 +308,118 @@ func (m *Paddy) RegisterPlugin(plugin Plugin) goutil.Error {
 	return ErrorNoError
 }
 
-func (m *Paddy) doLocation(r *http.Request, context goutil.Context) (backend string, response *http.Response, err goutil.Error) {
+func (m *Paddy) findVServer(host string) *VirtualServer {
+	for _, v := range m.vServers {
+		if _, ok := v.hosts[host]; ok {
+			return v
+		}
+	}
+	return nil
+}
+
+func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context goutil.Context) (done bool, backend string, response *http.Response, err goutil.Error) {
 	// todo
-	return "", nil, ErrorNoError
+	vSvr := m.findVServer(r.Host)
+	if vSvr == nil {
+		return false, "", nil, ErrorNoError
+	}
+
+	var reItem *RegexpLocationItem = nil
+	if vSvr.regexpLocation != nil {
+		for _, v := range vSvr.regexpLocation.Items {
+			loc := v.uriRegexp.FindStringIndex(r.RequestURI)
+			if loc != nil && loc[0] == 0 && loc[1] == len(r.RequestURI) {
+				reItem = v
+				break
+			}
+		}
+		if reItem != nil {
+			if reItem.requestFilter != nil {
+				if err := reItem.requestFilter.Execute(context); err != nil {
+					return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
+				}
+			}
+
+			if i, ok := context.GetCtxData(JsonExpVarSetResponse); ok && goutil.GetIntValueDefault(i, 0) == 1 {
+				if writeResponseUseContext(w, context) {
+					return true, "", nil, ErrorNoError
+				}
+			}
+
+			rewriteRequestUseContext(r, context)
+			if reItem.responseFilter != nil {
+				context.SetCtxData(ContextVarResponseFilter, reItem.responseFilter)
+			}
+
+			fileRoot := reItem.fileRoot
+			if fileRoot == "" {
+				if i, ok := context.GetCtxData(JsonExpVarFileRoot); ok {
+					fileRoot = goutil.GetStringValue(i)
+				}
+			}
+
+			if fileRoot != "" {
+				done, err := m.fileServer.serve(fileRoot, r, w)
+				if err.Code != ErrCodeNoError {
+					return false, "", nil, err
+				} else if done {
+					return true, "", nil, ErrorNoError
+				}
+			}
+
+			if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
+				if backend := goutil.GetStringValue(i); backend != "" {
+					return false, backend, nil, ErrorNoError
+				}
+			}
+		}
+	}
+
+	if vSvr.jsonexpLocation != nil && vSvr.jsonexpLocation.Exp != nil {
+		if err := vSvr.jsonexpLocation.Exp.Execute(context); err != nil {
+			return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
+		}
+
+		if vSvr.jsonexpLocation.requestFilter != nil {
+			if err := vSvr.jsonexpLocation.requestFilter.Execute(context); err != nil {
+				return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
+			}
+		}
+
+		if i, ok := context.GetCtxData(JsonExpVarSetResponse); ok && goutil.GetIntValueDefault(i, 0) == 1 {
+			if writeResponseUseContext(w, context) {
+				return true, "", nil, ErrorNoError
+			}
+		}
+
+		rewriteRequestUseContext(r, context)
+		if vSvr.jsonexpLocation.responseFilter != nil {
+			context.SetCtxData(ContextVarResponseFilter, vSvr.jsonexpLocation.responseFilter)
+		}
+
+		fileRoot := ""
+		if i, ok := context.GetCtxData(JsonExpVarFileRoot); ok {
+			fileRoot = goutil.GetStringValue(i)
+		}
+
+		if fileRoot != "" {
+			done, err := m.fileServer.serve(fileRoot, r, w)
+			if err.Code != ErrCodeNoError {
+				return false, "", nil, err
+			} else if done {
+				return true, "", nil, ErrorNoError
+			}
+		}
+
+		if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
+			if backend := goutil.GetStringValue(i); backend != "" {
+				return false, backend, nil, ErrorNoError
+			}
+		}
+
+	}
+
+	return false, "", nil, ErrorNoError
 }
 
 func (m *Paddy) doBackend(backend string, r *http.Request, context goutil.Context) (response *http.Response, err goutil.Error) {
@@ -374,6 +527,17 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
 			}
 
 		}
+	}
+
+	// create backend loadbalance client
+	for _, v := range m.backendDefs {
+		v.lbClient = lblhttpclient.NewLoadBalanceClient(
+			MethodStrToI(v.Method),
+			v.MaxIdleConn,
+			v.ParamKey,
+			time.Millisecond*time.Duration(DefaultBackendConnTimeout),
+			v.WaitResponseTiemout,
+		)
 	}
 
 	return ErrorNoError
@@ -555,7 +719,7 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 	if cfg == nil {
 		return goutil.NewErrorf(ErrCodeNewBackendDefFail, "cfg map is nil")
 	}
-	def := BackendDef{}
+	def := BackendDef{MaxIdleConn: DefaultBackendMaxIdleConn, WaitResponseTiemout: time.Duration(DefaultBackendWaitResponseTimeout) * time.Millisecond}
 	// alias
 	if alias, ok := cfg[CfgBackendDefAlias]; ok {
 		if aliasStr, ok := alias.(string); ok {
@@ -627,6 +791,24 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefJsonexp)
 		}
 		def.JsonExp = jeGrp
+	}
+
+	// max_idle_conn
+	if conns, ok := cfg[CfgBackendDefMaxIdleConn]; ok {
+		if i, ok := goutil.GetIntValue(conns); ok {
+			if i > 0 {
+				def.MaxIdleConn = int(i)
+			}
+		}
+	}
+
+	// wait_response_timeout
+	if timeout, ok := cfg[CfgBackendDefMaxIdleConn]; ok {
+		if i, ok := goutil.GetIntValue(timeout); ok {
+			if i > 0 {
+				def.WaitResponseTiemout = time.Duration(i) * time.Millisecond
+			}
+		}
 	}
 
 	if def.Alias != "" && len(def.BackendList) > 0 && def.Method != "" {
@@ -820,5 +1002,6 @@ func (m *Paddy) StartListen() goutil.Error {
 		}
 	}
 
+	m.ready = true
 	return goutil.NewError(ErrCodeNoError, "")
 }
