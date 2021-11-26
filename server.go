@@ -219,6 +219,19 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if resp != nil {
+		context.SetCtxData(JsonExpObjResponseInstance, newResponseObj(resp))
+		context.SetCtxData(JsonExpObjResponseHeaderInstance, newResponseHeaderObj(resp))
+		if respFilter, ok := context.GetCtxData(ContextVarResponseFilter); ok && respFilter != nil {
+			if err := respFilter.(*jsonexp.JsonExpGroup).Execute(context); err != nil {
+				glog.Errorf("execute response filter fail for uri: %s", r.RequestURI)
+				w.WriteHeader(500)
+				return
+			}
+		}
+		rewriteResponseUseContext(resp, context)
+	}
+
 	for _, plugin := range m.paddy.plugin {
 		hijacked, resp, err = m.pluginResponseAdapter(plugin, resp, w, context)
 		if err.Code != ErrCodeNoError {
@@ -318,7 +331,6 @@ func (m *Paddy) findVServer(host string) *VirtualServer {
 }
 
 func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context goutil.Context) (done bool, backend string, response *http.Response, err goutil.Error) {
-	// todo
 	vSvr := m.findVServer(r.Host)
 	if vSvr == nil {
 		return false, "", nil, ErrorNoError
@@ -336,6 +348,7 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 		if reItem != nil {
 			if reItem.requestFilter != nil {
 				if err := reItem.requestFilter.Execute(context); err != nil {
+					glog.Errorf("execute request filter fail for uri: %s", r.RequestURI)
 					return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
 				}
 			}
@@ -377,11 +390,13 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 
 	if vSvr.jsonexpLocation != nil && vSvr.jsonexpLocation.Exp != nil {
 		if err := vSvr.jsonexpLocation.Exp.Execute(context); err != nil {
+			glog.Errorf("execute Exp fail for uri: %s", r.RequestURI)
 			return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
 		}
 
 		if vSvr.jsonexpLocation.requestFilter != nil {
 			if err := vSvr.jsonexpLocation.requestFilter.Execute(context); err != nil {
+				glog.Errorf("execute request filter fail for uri: %s", r.RequestURI)
 				return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
 			}
 		}
@@ -423,8 +438,16 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 }
 
 func (m *Paddy) doBackend(backend string, r *http.Request, context goutil.Context) (response *http.Response, err goutil.Error) {
-	// todo
-	return nil, ErrorNoError
+	backendObj, ok := m.backendDefs[backend]
+	if !ok {
+		return nil, goutil.NewErrorf(ErrCodeBackendNotFound, ErrMsgBackendNotFound, backend)
+	}
+
+	if resp, err := backendObj.lbClient.DoRequest(RemoteIp(r), r); err != nil {
+		return nil, goutil.NewErrorf(ErrCodeBackendRequestFail, ErrMsgBackendRequestFail, backend, err.Error())
+	} else {
+		return resp, ErrorNoError
+	}
 }
 
 func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
@@ -547,7 +570,7 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 	if cfg == nil {
 		return goutil.NewErrorf(ErrCodeNewServerFail, "cfg map is nil")
 	}
-	// todo
+
 	vs := &VirtualServer{}
 	vs.init()
 	// listen

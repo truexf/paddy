@@ -5,7 +5,9 @@
 package paddy
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 
@@ -186,8 +188,9 @@ func (o *RequestParamObj) SetPropertyValue(property string, value interface{}, c
 }
 
 type ResponseObj struct {
-	status int
-	body   []byte
+	status       int
+	body         []byte
+	bodyModified bool
 }
 
 func newResponseObj(resp *http.Response) *ResponseObj {
@@ -227,6 +230,7 @@ func (o *ResponseObj) SetPropertyValue(property string, value interface{}, conte
 		}
 	} else if property == JsonExpObjPropResponseBody {
 		m.body = []byte(goutil.GetStringValue(value))
+		m.bodyModified = true
 	}
 }
 
@@ -283,6 +287,21 @@ func writeResponseUseContext(w http.ResponseWriter, context goutil.Context) (wri
 		return true
 	}
 	return false
+}
+
+func rewriteResponseUseContext(resp *http.Response, context goutil.Context) {
+	ro, roh := findResponse(context)
+	if ro != nil && roh != nil {
+		resp.StatusCode = ro.status
+		if ro.bodyModified {
+			resp.Body = io.NopCloser(bytes.NewBuffer(ro.body))
+		}
+		for k, v := range roh.header {
+			if len(v) > 0 {
+				resp.Header.Set(k, v[0])
+			}
+		}
+	}
 }
 
 func rewriteRequestUseContext(originRequest *http.Request, context goutil.Context) (newRequest *http.Request) {

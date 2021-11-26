@@ -1,6 +1,7 @@
 package paddy
 
 import (
+	"net/http"
 	"strings"
 
 	"github.com/truexf/goutil/lblhttpclient"
@@ -67,4 +68,27 @@ func MethodStrToI(ms string) lblhttpclient.LoadBalanceMethod {
 		iMethod = lblhttpclient.MethodMinPending
 	}
 	return iMethod
+}
+
+func RemoteIp(r *http.Request) string {
+	//X-Real-Ip
+	//X-Forwarded-For
+	for k, v := range r.Header {
+		if strings.EqualFold(k, "X-Real-Ip") && len(v) > 0 && len(v[0]) > 0 {
+			return v[0]
+		}
+	}
+
+	for k, v := range r.Header {
+		if strings.EqualFold(k, "X-Forwarded-For") && len(v) > 0 && len(v[0]) > 0 {
+			return v[0]
+		}
+	}
+
+	lst := strings.Split(r.RemoteAddr, ":")
+	if len(lst) > 0 {
+		return lst[0]
+	}
+	return ""
+
 }

@@ -47,6 +47,10 @@ const (
 	ErrMsgDemo                 = "demo error %s"
 	ErrCodeJsonexpExecute      = 115
 	ErrMsgJsonexpExecute       = "execute jsonexp fail, %s"
+	ErrCodeBackendNotFound     = 116
+	ErrMsgBackendNotFound      = "backend %s not found"
+	ErrCodeBackendRequestFail  = 117
+	ErrMsgBackendRequestFail   = "backend %s request fail, %s"
 )
 
 var AllMethods = []string{MethodRandom, MethodRoundrobin, MethodMinPending, MethodJsonExp, MethodIpHash, MethodUrlParam}
