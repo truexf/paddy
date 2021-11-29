@@ -189,9 +189,13 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	resp = &http.Response{StatusCode: 404}
 	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjRequestInstance, newRequestObj(r), context)
 	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjRequestHeaderInstance, newRequestHeaderObj(r), context)
 	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjRequestParamInstance, newRequestParamObj(r), context)
+
+	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjResponseInstance, newResponseObj(resp), context)
+	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjResponseHeaderInstance, newResponseHeaderObj(resp), context)
 
 	doLoop := true
 	for {
@@ -211,13 +215,13 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if done {
 				return
 			}
-			if backend == "" && resp == nil && proxyPass == "" {
-				resp = &http.Response{StatusCode: 404}
+
+			if backend == "" && proxyPass == "" {
 				break
 			}
 		}
 
-		if resp == nil && (backend != "" || proxyPass != "") {
+		if !done && (backend != "" || proxyPass != "") {
 			resp, err = m.paddy.doBackend(proxyPass, backend, r, context)
 			if err.Code != ErrCodeNoError {
 				glog.Errorf("uri: %s, do backend: %s fail, %d, %s", r.RequestURI, backend, err.Code, err.Error())
@@ -232,8 +236,6 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resp != nil {
-		m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjResponseInstance, newResponseObj(resp), context)
-		m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjResponseHeaderInstance, newResponseHeaderObj(resp), context)
 		if respFilter, ok := context.GetCtxData(ContextVarResponseFilter); ok && respFilter != nil {
 			if err := respFilter.(*jsonexp.JsonExpGroup).Execute(context); err != nil {
 				glog.Errorf("execute response filter fail for uri: %s", r.RequestURI)
@@ -266,8 +268,10 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				wHeader.Set(k, v[0])
 			}
 		}
-		if _, err := io.Copy(w, resp.Body); err != nil {
-			glog.Errorf("uri: %s, write response body fail, %s", r.RequestURI, err.Error())
+		if resp.Body != nil {
+			if _, err := io.Copy(w, resp.Body); err != nil {
+				glog.Errorf("uri: %s, write response body fail, %s", r.RequestURI, err.Error())
+			}
 		}
 	}
 }

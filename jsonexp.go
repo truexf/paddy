@@ -27,11 +27,11 @@ const (
 	JsonExpObjResponse       = "$resp"
 	JsonExpObjResponseHeader = "$resp_header"
 
-	JsonExpObjRequestInstance        = "$req_inst"
-	JsonExpObjRequestHeaderInstance  = "$req_header_inst"
-	JsonExpObjRequestParamInstance   = "$req_param_inst"
-	JsonExpObjResponseInstance       = "$resp_inst"
-	JsonExpObjResponseHeaderInstance = "$resp_header_inst"
+	JsonExpObjRequestInstance        = "$req"
+	JsonExpObjRequestHeaderInstance  = "$req_header"
+	JsonExpObjRequestParamInstance   = "$req_param"
+	JsonExpObjResponseInstance       = "$resp"
+	JsonExpObjResponseHeaderInstance = "$resp_header"
 
 	JsonExpObjPropRequestVer    = "ver"
 	JsonExpObjPropRequestHost   = "host"
