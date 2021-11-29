@@ -113,13 +113,10 @@ type VirtualServer struct {
 	tlsCertKey      string
 	regexpLocation  *RegexpLocation
 	jsonexpLocation *JsonexpLocation
-
-	listeners map[uint16]*Listener
 }
 
 func (m *VirtualServer) init() {
 	m.listenPorts = make(map[uint16]bool)
-	m.listeners = make(map[uint16]*Listener)
 	m.hosts = make(map[string][]byte)
 }
 
@@ -283,7 +280,8 @@ type Paddy struct {
 	fileServer            *FileServer
 	backendGroups         map[string]*BackendGroup
 	backendDefs           map[string]*BackendDef
-	vServers              []*VirtualServer
+	listeners             map[uint16]*Listener
+	vServers              map[uint16]map[string]*VirtualServer // map[port]map[host]*VirtualServer
 	configFile            string
 	plugin                []Plugin
 	ready                 bool
@@ -323,7 +321,8 @@ func (m *Paddy) init() {
 	m.initJsonexpDict()
 	m.backendGroups = make(map[string]*BackendGroup)
 	m.backendDefs = make(map[string]*BackendDef)
-	m.vServers = make([]*VirtualServer, 0)
+	m.listeners = make(map[uint16]*Listener)
+	m.vServers = make(map[uint16]map[string]*VirtualServer)
 	m.plugin = make([]Plugin, 0)
 }
 
@@ -349,11 +348,23 @@ func (m *Paddy) RegisterPlugin(plugin Plugin) goutil.Error {
 }
 
 func (m *Paddy) findVServer(host string) *VirtualServer {
-	for _, v := range m.vServers {
-		if _, ok := v.hosts[host]; ok {
-			return v
+	host = strings.ToLower(host)
+	var port uint16 = 80
+	lst := strings.Split(host, ":")
+	if len(lst) > 1 {
+		i, err := strconv.Atoi(lst[1])
+		if err == nil && i >= 0 && i < math.MaxUint16 {
+			port = uint16(i)
 		}
 	}
+	if svrList, ok := m.vServers[port]; ok {
+		for _, v := range svrList {
+			if _, ok := v.hosts[lst[0]]; ok {
+				return v
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -668,14 +679,6 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 			if err != nil || port <= 0 || port >= int(math.MaxUint16) {
 				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerListen)
 			}
-			for _, vs := range m.vServers {
-				if _, ok := vs.listenPorts[uint16(port)]; ok {
-					return goutil.NewErrorf(ErrCodeListenPortDup, ErrMsgListenPortDup, port)
-				}
-			}
-			if _, ok := vs.listenPorts[uint16(port)]; ok {
-				return goutil.NewErrorf(ErrCodeListenPortDup, ErrMsgListenPortDup, port)
-			}
 
 			if len(lst) == 2 {
 				if lst[1] != "tls" && lst[1] != "ssl" {
@@ -700,11 +703,6 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 			vStr := v.(string)
 			if _, ok := vs.hosts[vStr]; ok {
 				return goutil.NewErrorf(ErrCodeHostDup, ErrMsgHostDup, v)
-			}
-			for _, vs := range m.vServers {
-				if _, ok := vs.hosts[vStr]; ok {
-					return goutil.NewErrorf(ErrCodeHostDup, ErrMsgHostDup, v)
-				}
 			}
 			vs.hosts[vStr] = nil
 		}
@@ -826,7 +824,32 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 		}
 	}
 
-	m.vServers = append(m.vServers, vs)
+	// validate port
+	for k, v := range vs.listenPorts {
+		if lsn, ok := m.listeners[k]; ok {
+			if lsn.tls != v {
+				return goutil.NewErrorf(ErrCodeNewServerFail, ErrMsgNewServerFail, fmt.Sprintf("listen port %d duplicated", k))
+			}
+		} else {
+			m.listeners[k] = &Listener{port: k, tls: v}
+		}
+	}
+
+	for k := range m.listeners {
+		samePortSvrs, ok := m.vServers[k]
+		if !ok {
+			samePortSvrs = make(map[string]*VirtualServer)
+			m.vServers[k] = samePortSvrs
+		}
+		for host := range vs.hosts {
+			if _, exists := samePortSvrs[host]; !exists {
+				samePortSvrs[host] = vs
+			} else {
+				return goutil.NewErrorf(ErrCodeNewServerFail, ErrMsgNewServerFail, fmt.Sprintf("vserver host %s duplicated on listen port %d", host, k))
+			}
+		}
+	}
+
 	return ErrorNoError
 }
 
@@ -988,37 +1011,29 @@ func (m *Paddy) newBackendGroup(groupName string, addrList []interface{}) goutil
 	return goutil.NewError(ErrCodeNoError, "")
 }
 
-//envVarValue fd:port,fd:port,fd:port,...
+// envVarValue fd:port,fd:port,fd:port,...
 func (m *Paddy) GenerateInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (noCloseFds []*os.File, envVarValue string) {
 	var ret []int
-	ports := make(map[uint16]bool)
-	for _, vs := range m.vServers {
-		for k, v := range vs.listenPorts {
-			ports[k] = v
-		}
-	}
-	for _, ovs := range originPaddy.vServers {
-		for _, v := range ovs.listeners {
-			if _, ok := ports[v.port]; ok {
-				ret = append(ret, int(v.port))
-			}
+
+	for k, lsnO := range originPaddy.listeners {
+		// 如果新老配置的端口相同，tls相同，保留该句柄不关闭供子进程继承
+		if lsn, ok := m.listeners[k]; ok && lsn.tls == lsnO.tls {
+			ret = append(ret, int(k))
 		}
 	}
 
 	sort.Ints(ret)
 	curFd := beginFd
 	for _, portInt := range ret {
-		for _, ovs := range originPaddy.vServers {
-			for _, lsn := range ovs.listeners {
-				if int(lsn.port) == portInt {
-					if f, err := lsn.tcpListener.File(); err == nil {
-						noCloseFds = append(noCloseFds, f)
-						if envVarValue != "" {
-							envVarValue += ","
-						}
-						envVarValue += fmt.Sprintf("%d:%d", curFd, portInt)
-						curFd++
+		for port, lsn := range m.listeners {
+			if portInt == int(port) {
+				if f, err := lsn.tcpListener.File(); err == nil {
+					noCloseFds = append(noCloseFds, f)
+					if envVarValue != "" {
+						envVarValue += ","
 					}
+					envVarValue += fmt.Sprintf("%d:%d", curFd, portInt)
+					curFd++
 				}
 			}
 		}
@@ -1027,6 +1042,7 @@ func (m *Paddy) GenerateInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (
 	return noCloseFds, envVarValue
 }
 
+// envVarValue fd:port,fd:port,fd:port,...
 func (m *Paddy) GetInheritedPortsFromEnv(envVar string) (inheritedFds []uintptr, inheritedPorts []uint16) {
 	varStr, found := os.LookupEnv(envVar)
 	if !found {
@@ -1079,35 +1095,42 @@ func (m *Paddy) StartListen() goutil.Error {
 		return nil
 	}
 
-	for _, vs := range m.vServers {
-		for port, isTls := range vs.listenPorts {
-			lsn := findInheritedListener(port)
-			if lsn == nil {
-				tcpAddr, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf(":%d", port))
-				if err != nil {
-					return goutil.NewError(ErrCodeListenFail, err.Error())
-				}
-				lsn, err = net.ListenTCP("tcp4", tcpAddr)
-				if err != nil {
-					return goutil.NewError(ErrCodeListenFail, err.Error())
-				}
+	for port, lsnObj := range m.listeners {
+		lsn := findInheritedListener(port)
+		if lsn == nil {
+			tcpAddr, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf(":%d", port))
+			if err != nil {
+				return goutil.NewError(ErrCodeListenFail, err.Error())
 			}
-			paddyListener := &Listener{port: port, tcpListener: lsn, tls: isTls}
-			paddyListener.httpServer = &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: m.handler}
-			vs.listeners[port] = paddyListener
-			if isTls {
-				go func() {
-					if err := paddyListener.httpServer.ServeTLS(lsn, vs.tlsCert, vs.tlsCertKey); err != nil {
-						panic(err)
-					}
-				}()
-			} else {
-				go func() {
-					if err := paddyListener.httpServer.Serve(lsn); err != nil {
-						panic(err)
-					}
-				}()
+			lsn, err = net.ListenTCP("tcp4", tcpAddr)
+			if err != nil {
+				return goutil.NewError(ErrCodeListenFail, err.Error())
 			}
+		}
+		paddyListener := &Listener{port: port, tcpListener: lsn, tls: lsnObj.tls}
+		paddyListener.httpServer = &http.Server{Addr: fmt.Sprintf(":%d", port), Handler: m.handler}
+		m.listeners[port] = paddyListener
+		if lsnObj.tls {
+			go func() {
+				if svrs, ok := m.vServers[port]; !ok {
+					panic(fmt.Errorf("v-server with port %d not exists", port))
+				} else if len(svrs) > 1 {
+					panic(fmt.Errorf("v-server with tls port %d duplicated", port))
+				} else {
+					for _, vs := range svrs {
+						if err := paddyListener.httpServer.ServeTLS(lsn, vs.tlsCert, vs.tlsCertKey); err != nil {
+							panic(err)
+						}
+						break
+					}
+				}
+			}()
+		} else {
+			go func() {
+				if err := paddyListener.httpServer.Serve(lsn); err != nil {
+					panic(err)
+				}
+			}()
 		}
 	}
 
