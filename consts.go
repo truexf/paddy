@@ -67,6 +67,7 @@ const (
 	ErrMsgBackendNotFound      = "backend %s not found"
 	ErrCodeBackendRequestFail  = 117
 	ErrMsgBackendRequestFail   = "backend %s request fail, %s"
+	ErrCodeCommonError         = 118
 )
 
 const (

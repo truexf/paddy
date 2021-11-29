@@ -291,7 +291,8 @@ func NewPaddy(configFile string) (*Paddy, goutil.Error) {
 	ret := &Paddy{}
 	ret.init()
 	ret.configFile = configFile
-	err := ret.loadConfig(configFile, true)
+	loadedMap := make(map[string]bool)
+	err := ret.loadConfig(configFile, true, loadedMap)
 	if err.Code != ErrCodeNoError {
 		return nil, err
 	}
@@ -546,11 +547,15 @@ func (m *Paddy) doBackend(proxyPass string, backend string, r *http.Request, con
 	}
 }
 
-func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
+func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string]bool) goutil.Error {
+	if ok := loadedMap[configFile]; ok {
+		return goutil.NewError(ErrCodeCommonError, "circular config "+configFile)
+	}
+	loadedMap[configFile] = true
 	if !goutil.FileExists(configFile) {
 		return goutil.NewErrorf(ErrCodeConfigNotExist, ErrMsgConfigNotExist, configFile)
 	}
-	bts, err := os.ReadFile(m.configFile)
+	bts, err := os.ReadFile(configFile)
 	if err != nil {
 		return goutil.NewErrorf(ErrCodeConfigReadFail, ErrMsgConfigReadFail, configFile, err.Error())
 	}
@@ -568,9 +573,10 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
 		if rv.Kind() != reflect.Slice {
 			return goutil.NewErrorf(ErrCodeCfgItemInvalid, ErrMsgCfgItemInvalid, CfgInclude)
 		}
-		for _, v := range includeFiles.([]interface{}) {
+		files := includeFiles.([]interface{})
+		for _, v := range files {
 			vStr := goutil.GetStringValue(v)
-			gErr := m.loadConfig(vStr, false)
+			gErr := m.loadConfig(vStr, false, loadedMap)
 			if gErr.Code != ErrCodeNoError {
 				return gErr
 			}
@@ -835,7 +841,7 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 		}
 	}
 
-	for k := range m.listeners {
+	for k := range vs.listenPorts {
 		samePortSvrs, ok := m.vServers[k]
 		if !ok {
 			samePortSvrs = make(map[string]*VirtualServer)
@@ -846,6 +852,16 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 				samePortSvrs[host] = vs
 			} else {
 				return goutil.NewErrorf(ErrCodeNewServerFail, ErrMsgNewServerFail, fmt.Sprintf("vserver host %s duplicated on listen port %d", host, k))
+			}
+		}
+	}
+
+	for k, lsn := range m.listeners {
+		if lsn.tls {
+			if svrs, ok := m.vServers[k]; ok {
+				if len(svrs) > 1 {
+					return goutil.NewErrorf(ErrCodeNewServerFail, ErrMsgNewServerFail, fmt.Sprintf("v-server with tls port %d duplicated", k))
+				}
 			}
 		}
 	}
