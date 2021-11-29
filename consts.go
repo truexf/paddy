@@ -12,6 +12,22 @@ var (
 	DefaultBackendMaxIdleConn         = 10
 	DefaultBackendWaitResponseTimeout = 2000
 	DefaultBackendConnTimeout         = 3000
+
+	AllMethods = []string{MethodRandom, MethodRoundrobin, MethodMinPending, MethodIpHash, MethodUrlParam}
+)
+
+const (
+	// for restart
+	EnvVarInheritedListener = "inherited_listener"
+
+	ContextVarResponseFilter = "__response_filter__"
+
+	// can use in location_regexp.proxy_pass
+	MacroBackend = "{{backend}}"
+	MacroHost    = "{{host}}"
+	MacroURI     = "{{uri}}"
+	MacroPath    = "{{path}}"
+	MacroParams  = "{{params}}"
 )
 
 const (
@@ -53,15 +69,12 @@ const (
 	ErrMsgBackendRequestFail   = "backend %s request fail, %s"
 )
 
-var AllMethods = []string{MethodRandom, MethodRoundrobin, MethodMinPending, MethodJsonExp, MethodIpHash, MethodUrlParam}
-
 const (
 	MethodRoundrobin = "roundrobin"
 	MethodMinPending = "minpending"
 	MethodRandom     = "random"
 	MethodIpHash     = "iphash"
-	MethodJsonExp    = "jsonexp"
-	MethodUrlParam   = "urlparam"
+	MethodUrlParam   = "uri_param"
 )
 
 const (
@@ -89,18 +102,11 @@ const (
 	CfgServerLocationRegexpExp             = "exp"
 	CfgServerLocationRegexpFileRoot        = "file_root"
 	CfgServerLocationRegexpBackend         = "backend"
+	CfgServerLocationRegexpProxyPass       = "proxy_pass"
 	CfgServerLocationRegexpRequestFilter   = "request_filter"
 	CfgServerLocationRegexpResponseFilter  = "response_filter"
 	CfgServerLocationJsonexp               = "location_jsonexp"
 	CfgServerLocationJsonexpExp            = "exp"
 	CfgServerLocationJsonexpRequestFilter  = "request_filter"
 	CfgServerLocationJsonexpResponseFilter = "response_filter"
-)
-
-const (
-	EnvVarInheritedListener = "inherited_listener"
-)
-
-const (
-	ContextVarResponseFilter = "__response_filter__"
 )

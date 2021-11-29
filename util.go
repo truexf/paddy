@@ -13,7 +13,7 @@ func SplitByLine(s string) (ret []string) {
 	}
 	ret3 := make([]string, 0)
 	ret2 := make([]string, 0)
-	tmp := make([]string, 0)
+	var tmp []string
 	ret1 := strings.Split(s, "\r\n")
 	var j int
 	j = len(ret1)
@@ -56,8 +56,6 @@ func MethodStrToI(ms string) lblhttpclient.LoadBalanceMethod {
 	switch ms {
 	case MethodIpHash:
 		iMethod = lblhttpclient.MethodIpHash
-	case MethodJsonExp:
-		iMethod = lblhttpclient.MethodJsonExp
 	case MethodRandom:
 		iMethod = lblhttpclient.MethodRandom
 	case MethodRoundrobin:

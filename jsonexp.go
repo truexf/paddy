@@ -16,6 +16,7 @@ import (
 )
 
 const (
+	JsonExpVarProxyPass   = "$proxy_pass"
 	JsonExpVarBackend     = "$backend"
 	JsonExpVarFileRoot    = "$file_root"
 	JsonExpVarSetResponse = "$set_response"
@@ -112,7 +113,6 @@ func (o *RequestObj) SetPropertyValue(property string, value interface{}, contex
 	case JsonExpObjPropRequestMethod:
 		m.method = goutil.GetStringValue(value)
 	}
-	return
 }
 
 type RequestHeaderObj struct {
@@ -133,23 +133,10 @@ func requestHeaderObjFromContext(context goutil.Context) *RequestHeaderObj {
 }
 
 func (o *RequestHeaderObj) GetPropertyValue(property string, context goutil.Context) interface{} {
-	// instance was set into context before
-	m := requestHeaderObjFromContext(context)
-	if m == nil {
-		return nil
-	}
-
-	return m.header.Get(property)
-
+	return o.header.Get(property)
 }
 func (o *RequestHeaderObj) SetPropertyValue(property string, value interface{}, context goutil.Context) {
-	// instance was set into context before
-	m := requestHeaderObjFromContext(context)
-	if m == nil {
-		return
-	}
-
-	m.header.Set(property, goutil.GetStringValue(value))
+	o.header.Set(property, goutil.GetStringValue(value))
 }
 
 type RequestParamObj struct {
@@ -170,21 +157,10 @@ func requestParamObjFromContext(context goutil.Context) *RequestParamObj {
 }
 
 func (o *RequestParamObj) GetPropertyValue(property string, context goutil.Context) interface{} {
-	// instance was set into context before
-	m := requestParamObjFromContext(context)
-	if m == nil {
-		return nil
-	}
-	return m.params.Get(property)
+	return o.params.Get(property)
 }
 func (o *RequestParamObj) SetPropertyValue(property string, value interface{}, context goutil.Context) {
-	// instance was set into context before
-	m := requestParamObjFromContext(context)
-	if m == nil {
-		return
-	}
-
-	m.params.Set(property, goutil.GetStringValue(value))
+	o.params.Set(property, goutil.GetStringValue(value))
 }
 
 type ResponseObj struct {
@@ -207,30 +183,19 @@ func responseObjFromContext(context goutil.Context) *ResponseObj {
 }
 
 func (o *ResponseObj) GetPropertyValue(property string, context goutil.Context) interface{} {
-	// instance was set into context before
-	m := responseObjFromContext(context)
-	if m == nil {
-		return nil
-	}
 	if property == JsonExpObjPropResponseStatus {
-		return m.status
+		return o.status
 	}
 	return nil
 }
 func (o *ResponseObj) SetPropertyValue(property string, value interface{}, context goutil.Context) {
-	// instance was set into context before
-	m := responseObjFromContext(context)
-	if m == nil {
-		return
-	}
-
 	if property == JsonExpObjPropResponseStatus {
 		if i, ok := goutil.GetIntValue(value); ok {
-			m.status = int(i)
+			o.status = int(i)
 		}
 	} else if property == JsonExpObjPropResponseBody {
-		m.body = []byte(goutil.GetStringValue(value))
-		m.bodyModified = true
+		o.body = []byte(goutil.GetStringValue(value))
+		o.bodyModified = true
 	}
 }
 
@@ -252,22 +217,10 @@ func responseHeaderObjFromContext(context goutil.Context) *ResponseHeaderObj {
 }
 
 func (o *ResponseHeaderObj) GetPropertyValue(property string, context goutil.Context) interface{} {
-	// instance was set into context before
-	m := responseHeaderObjFromContext(context)
-	if m == nil {
-		return nil
-	}
-
-	return m.header.Get(property)
+	return o.header.Get(property)
 }
 func (o *ResponseHeaderObj) SetPropertyValue(property string, value interface{}, context goutil.Context) {
-	// instance was set into context before
-	m := responseHeaderObjFromContext(context)
-	if m == nil {
-		return
-	}
-
-	m.header.Set(property, goutil.GetStringValue(value))
+	o.header.Set(property, goutil.GetStringValue(value))
 }
 
 func findResponse(context goutil.Context) (*ResponseObj, *ResponseHeaderObj) {

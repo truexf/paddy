@@ -33,7 +33,7 @@ type Plugin interface {
 
 	// 在http请求接收完成后介入
 	// hijacked 是否劫持：true则必须实现respWriter写响应；false时不准向respWriter写响应，可以返回backend(此时框架直接去请求backend而不再走location匹配流程，否则框架执行location匹配)
-	RequestHeaderCompleted(req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, backend string, err goutil.Error)
+	RequestHeaderCompleted(req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, proxyPass, backend string, err goutil.Error)
 
 	// 框架在得到响应后，给客户端发送响应之前介入
 	// hijacked 是否劫持：true则必须实现respWriter写响应；false时，不准向respWriter写响应，可以返回newResponse(此时框架以newResponse写响应，否则以originResponse写响应）
@@ -57,16 +57,31 @@ type BackendDef struct {
 	backendGroupList    []string
 	Method              string
 	ParamKey            string
-	JsonExp             *jsonexp.JsonExpGroup
 	MaxIdleConn         int
 	WaitResponseTiemout time.Duration
 	lbClient            *lblhttpclient.LblHttpClient
+}
+
+func (m *BackendDef) createLbClient() {
+	m.lbClient = lblhttpclient.NewLoadBalanceClient(
+		MethodStrToI(m.Method),
+		m.MaxIdleConn,
+		m.ParamKey,
+		time.Millisecond*time.Duration(DefaultBackendConnTimeout),
+		m.WaitResponseTiemout,
+	)
+	for _, v := range m.BackendList {
+		for i := 0; i < v.Weight; i++ {
+			m.lbClient.AddBackend(fmt.Sprintf("%s:%d", v.Ip, v.Port), fmt.Sprintf("%s:%d:%d", v.Ip, v.Port, i), nil)
+		}
+	}
 }
 
 type RegexpLocationItem struct {
 	uriRegexp      *regexp.Regexp
 	backend        string
 	fileRoot       string
+	proxyPass      string
 	requestFilter  *jsonexp.JsonExpGroup
 	responseFilter *jsonexp.JsonExpGroup
 }
@@ -112,7 +127,7 @@ type PaddyHandler struct {
 	paddy *Paddy
 }
 
-func (m *PaddyHandler) pluginRequestAdapter(plugin Plugin, req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, backend string, err goutil.Error) {
+func (m *PaddyHandler) pluginRequestAdapter(plugin Plugin, req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, proxyPass string, backend string, err goutil.Error) {
 	defer func() {
 		if err := recover(); err != nil {
 			glog.Errorf("%s plugin request panic: %s", time.Now().String(), err)
@@ -158,11 +173,12 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var hijacked bool
 	var done bool
 	var backend string
+	var proxyPass string
 	var err goutil.Error
 	var resp *http.Response
 
 	for _, plugin := range m.paddy.plugin {
-		hijacked, backend, err = m.pluginRequestAdapter(plugin, r, w, context)
+		hijacked, proxyPass, backend, err = m.pluginRequestAdapter(plugin, r, w, context)
 		if err.Code != ErrCodeNoError {
 			glog.Errorf("call plugin request: %s fail,%d, %s", plugin.ID(), err.Code, err.Error())
 			w.WriteHeader(500)
@@ -171,14 +187,14 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if hijacked {
 			return
 		}
-		if backend != "" {
+		if backend != "" || proxyPass != "" {
 			break
 		}
 	}
 
-	context.SetCtxData(JsonExpObjRequestInstance, newRequestObj(r))
-	context.SetCtxData(JsonExpObjRequestHeaderInstance, newRequestHeaderObj(r))
-	context.SetCtxData(JsonExpObjRequestParamInstance, newRequestParamObj(r))
+	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjRequestInstance, newRequestObj(r), context)
+	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjRequestHeaderInstance, newRequestHeaderObj(r), context)
+	m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjRequestParamInstance, newRequestParamObj(r), context)
 
 	doLoop := true
 	for {
@@ -190,7 +206,7 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if backend == "" {
-			done, backend, resp, err = m.paddy.doLocation(r, w, context)
+			done, proxyPass, backend, resp, err = m.paddy.doLocation(r, w, context)
 			if err.Code != ErrCodeNoError {
 				glog.Errorf("uri: %s, do location fail, %d, %s", r.RequestURI, err.Code, err.Error())
 				break
@@ -198,20 +214,19 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if done {
 				return
 			}
-			if backend == "" && resp == nil {
+			if backend == "" && resp == nil && proxyPass == "" {
 				resp = &http.Response{StatusCode: 404}
 				break
 			}
 		}
 
-		if resp == nil {
-			resp, err = m.paddy.doBackend(backend, r, context)
+		if resp == nil && (backend != "" || proxyPass != "") {
+			resp, err = m.paddy.doBackend(proxyPass, backend, r, context)
 			if err.Code != ErrCodeNoError {
 				glog.Errorf("uri: %s, do backend: %s fail, %d, %s", r.RequestURI, backend, err.Code, err.Error())
 				break
 			}
 		}
-
 	}
 
 	if err.Code != ErrCodeNoError {
@@ -220,8 +235,8 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if resp != nil {
-		context.SetCtxData(JsonExpObjResponseInstance, newResponseObj(resp))
-		context.SetCtxData(JsonExpObjResponseHeaderInstance, newResponseHeaderObj(resp))
+		m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjResponseInstance, newResponseObj(resp), context)
+		m.paddy.jsonexpDict.RegisterObjectInContext(JsonExpObjResponseHeaderInstance, newResponseHeaderObj(resp), context)
 		if respFilter, ok := context.GetCtxData(ContextVarResponseFilter); ok && respFilter != nil {
 			if err := respFilter.(*jsonexp.JsonExpGroup).Execute(context); err != nil {
 				glog.Errorf("execute response filter fail for uri: %s", r.RequestURI)
@@ -262,15 +277,16 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // paddy web server
 type Paddy struct {
-	handler       *PaddyHandler
-	jsonexpDict   *jsonexp.Dictionary
-	fileServer    *FileServer
-	backendGroups map[string]*BackendGroup
-	backendDefs   map[string]*BackendDef
-	vServers      []*VirtualServer
-	configFile    string
-	plugin        []Plugin
-	ready         bool
+	noneBackendHttpClient *http.Client
+	handler               *PaddyHandler
+	jsonexpDict           *jsonexp.Dictionary
+	fileServer            *FileServer
+	backendGroups         map[string]*BackendGroup
+	backendDefs           map[string]*BackendDef
+	vServers              []*VirtualServer
+	configFile            string
+	plugin                []Plugin
+	ready                 bool
 }
 
 func NewPaddy(configFile string) (*Paddy, goutil.Error) {
@@ -285,6 +301,22 @@ func NewPaddy(configFile string) (*Paddy, goutil.Error) {
 }
 
 func (m *Paddy) init() {
+	m.noneBackendHttpClient = &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   time.Duration(DefaultBackendConnTimeout) * time.Millisecond,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2: true,
+			// MaxIdleConns:          maxIdleConns,
+			MaxIdleConnsPerHost:   DefaultBackendMaxIdleConn,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			ResponseHeaderTimeout: time.Duration(DefaultBackendWaitResponseTimeout) * time.Millisecond,
+		},
+	}
 	m.fileServer = &FileServer{}
 	m.handler = &PaddyHandler{paddy: m}
 	m.jsonexpDict = jsonexp.NewDictionary()
@@ -296,15 +328,10 @@ func (m *Paddy) init() {
 }
 
 func (m *Paddy) initJsonexpDict() {
+	m.jsonexpDict.RegisterVar(JsonExpVarProxyPass, nil)
 	m.jsonexpDict.RegisterVar(JsonExpVarBackend, nil)
 	m.jsonexpDict.RegisterVar(JsonExpVarFileRoot, nil)
 	m.jsonexpDict.RegisterVar(JsonExpVarSetResponse, nil)
-
-	m.jsonexpDict.RegisterObject(JsonExpObjRequest, &RequestObj{})
-	m.jsonexpDict.RegisterObject(JsonExpObjRequestHeader, &RequestHeaderObj{})
-	m.jsonexpDict.RegisterObject(JsonExpObjRequestParam, &RequestParamObj{})
-	m.jsonexpDict.RegisterObject(JsonExpObjResponse, &ResponseObj{})
-	m.jsonexpDict.RegisterObject(JsonExpObjResponseHeader, &ResponseHeaderObj{})
 }
 
 func (m *Paddy) GetConfigFile() string {
@@ -330,10 +357,10 @@ func (m *Paddy) findVServer(host string) *VirtualServer {
 	return nil
 }
 
-func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context goutil.Context) (done bool, backend string, response *http.Response, err goutil.Error) {
+func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context goutil.Context) (done bool, proxyPass string, backend string, response *http.Response, err goutil.Error) {
 	vSvr := m.findVServer(r.Host)
 	if vSvr == nil {
-		return false, "", nil, ErrorNoError
+		return false, "", "", nil, ErrorNoError
 	}
 
 	var reItem *RegexpLocationItem = nil
@@ -349,13 +376,13 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 			if reItem.requestFilter != nil {
 				if err := reItem.requestFilter.Execute(context); err != nil {
 					glog.Errorf("execute request filter fail for uri: %s", r.RequestURI)
-					return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
+					return false, "", "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
 				}
 			}
 
 			if i, ok := context.GetCtxData(JsonExpVarSetResponse); ok && goutil.GetIntValueDefault(i, 0) == 1 {
 				if writeResponseUseContext(w, context) {
-					return true, "", nil, ErrorNoError
+					return true, "", "", nil, ErrorNoError
 				}
 			}
 
@@ -374,36 +401,45 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 			if fileRoot != "" {
 				done, err := m.fileServer.serve(fileRoot, r, w)
 				if err.Code != ErrCodeNoError {
-					return false, "", nil, err
+					return false, "", "", nil, err
 				} else if done {
-					return true, "", nil, ErrorNoError
+					return true, "", "", nil, ErrorNoError
 				}
 			}
 
-			if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
-				if backend := goutil.GetStringValue(i); backend != "" {
-					return false, backend, nil, ErrorNoError
+			proxyPass := reItem.proxyPass
+			if proxyPass == "" {
+				if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
+					proxyPass = goutil.GetStringValue(i)
 				}
 			}
+
+			backend := reItem.backend
+			if backend == "" {
+				if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
+					backend = goutil.GetStringValue(i)
+				}
+			}
+			return false, proxyPass, backend, nil, ErrorNoError
 		}
 	}
 
 	if vSvr.jsonexpLocation != nil && vSvr.jsonexpLocation.Exp != nil {
 		if err := vSvr.jsonexpLocation.Exp.Execute(context); err != nil {
 			glog.Errorf("execute Exp fail for uri: %s", r.RequestURI)
-			return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
+			return false, "", "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
 		}
 
 		if vSvr.jsonexpLocation.requestFilter != nil {
 			if err := vSvr.jsonexpLocation.requestFilter.Execute(context); err != nil {
 				glog.Errorf("execute request filter fail for uri: %s", r.RequestURI)
-				return false, "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
+				return false, "", "", nil, goutil.NewErrorf(ErrCodeJsonexpExecute, ErrMsgJsonexpExecute, err.Error())
 			}
 		}
 
 		if i, ok := context.GetCtxData(JsonExpVarSetResponse); ok && goutil.GetIntValueDefault(i, 0) == 1 {
 			if writeResponseUseContext(w, context) {
-				return true, "", nil, ErrorNoError
+				return true, "", "", nil, ErrorNoError
 			}
 		}
 
@@ -420,30 +456,79 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 		if fileRoot != "" {
 			done, err := m.fileServer.serve(fileRoot, r, w)
 			if err.Code != ErrCodeNoError {
-				return false, "", nil, err
+				return false, "", "", nil, err
 			} else if done {
-				return true, "", nil, ErrorNoError
+				return true, "", "", nil, ErrorNoError
 			}
 		}
 
-		if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
-			if backend := goutil.GetStringValue(i); backend != "" {
-				return false, backend, nil, ErrorNoError
-			}
+		proxyPass := ""
+		if i, ok := context.GetCtxData(JsonExpVarProxyPass); ok {
+			proxyPass = goutil.GetStringValue(i)
 		}
+
+		backend := ""
+		if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
+			backend = goutil.GetStringValue(i)
+		}
+
+		return false, proxyPass, backend, nil, ErrorNoError
 
 	}
 
-	return false, "", nil, ErrorNoError
+	return false, "", "", nil, ErrorNoError
 }
 
-func (m *Paddy) doBackend(backend string, r *http.Request, context goutil.Context) (response *http.Response, err goutil.Error) {
-	backendObj, ok := m.backendDefs[backend]
-	if !ok {
-		return nil, goutil.NewErrorf(ErrCodeBackendNotFound, ErrMsgBackendNotFound, backend)
+func (m *Paddy) doBackend(proxyPass string, backend string, r *http.Request, context goutil.Context) (response *http.Response, e goutil.Error) {
+	var err error
+	var resp *http.Response
+	var noneBackend bool
+	var backendObj *BackendDef
+
+	if backend != "" {
+		ok := false
+		backendObj, ok = m.backendDefs[backend]
+		if !ok {
+			return nil, goutil.NewErrorf(ErrCodeBackendNotFound, ErrMsgBackendNotFound, backend)
+		}
 	}
 
-	if resp, err := backendObj.lbClient.DoRequest(RemoteIp(r), r); err != nil {
+	if proxyPass != "" {
+		noneBackend = true
+		if backend != "" {
+			proxyPass = strings.ReplaceAll(proxyPass, MacroBackend, backend)
+		} else {
+			proxyPass = strings.ReplaceAll(proxyPass, MacroHost, r.URL.Host)
+		}
+		proxyPass = strings.ReplaceAll(proxyPass, MacroPath, r.URL.Path)
+		proxyPass = strings.ReplaceAll(proxyPass, MacroParams, r.URL.Query().Encode())
+		proxyPass = strings.ReplaceAll(proxyPass, MacroURI, r.URL.RequestURI())
+		if len(proxyPass) < len("http") || !strings.EqualFold(proxyPass[:len("http")], "http") {
+			proxyPass = "http://" + proxyPass
+		}
+		if reqTemp, err := http.NewRequest(r.Method, proxyPass, nil); err != nil {
+			return nil, goutil.NewErrorf(ErrCodeBackendRequestFail, ErrMsgBackendRequestFail, backend, err.Error())
+		} else {
+			if reqTemp.Host == backend {
+				noneBackend = false
+			}
+			r.Proto = reqTemp.Proto
+			r.ProtoMajor = reqTemp.ProtoMajor
+			r.ProtoMinor = reqTemp.ProtoMinor
+			r.URL = reqTemp.URL
+			r.Host = reqTemp.Host
+		}
+	}
+
+	remoteIP := RemoteIp(r)
+	r.Header.Set("X-Forwarded-For", remoteIP)
+	if noneBackend {
+		resp, err = m.noneBackendHttpClient.Do(r)
+	} else {
+		resp, err = backendObj.lbClient.DoRequest(remoteIP, r)
+	}
+
+	if err != nil {
 		return nil, goutil.NewErrorf(ErrCodeBackendRequestFail, ErrMsgBackendRequestFail, backend, err.Error())
 	} else {
 		return resp, ErrorNoError
@@ -451,7 +536,7 @@ func (m *Paddy) doBackend(backend string, r *http.Request, context goutil.Contex
 }
 
 func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
-	if !goutil.FileExists(m.configFile) {
+	if !goutil.FileExists(configFile) {
 		return goutil.NewErrorf(ErrCodeConfigNotExist, ErrMsgConfigNotExist, configFile)
 	}
 	bts, err := os.ReadFile(m.configFile)
@@ -492,13 +577,8 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
 				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendGroup, grpName)
 			}
 			addrI := v.([]interface{})
-			for _, v := range addrI {
-				if rv := reflect.ValueOf(v); rv.Kind() != reflect.String {
-					return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendGroup, grpName)
-				}
-				if gErr := m.newBackendGroup(grpName, v.([]string)); gErr.Code != ErrCodeNoError {
-					return gErr
-				}
+			if gErr := m.newBackendGroup(grpName, addrI); gErr.Code != ErrCodeNoError {
+				return gErr
 			}
 		}
 	}
@@ -548,19 +628,17 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool) goutil.Error {
 					}
 				}
 			}
-
+		}
+		for k, def := range m.backendDefs {
+			if len(def.BackendList) == 0 {
+				delete(m.backendDefs, k)
+			}
 		}
 	}
 
 	// create backend loadbalance client
 	for _, v := range m.backendDefs {
-		v.lbClient = lblhttpclient.NewLoadBalanceClient(
-			MethodStrToI(v.Method),
-			v.MaxIdleConn,
-			v.ParamKey,
-			time.Millisecond*time.Duration(DefaultBackendConnTimeout),
-			v.WaitResponseTiemout,
-		)
+		v.createLbClient()
 	}
 
 	return ErrorNoError
@@ -656,51 +734,65 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 
 	// location_regexp
 	if rex, ok := cfg[CfgServerLocationRegexp]; ok {
-		if rv := reflect.ValueOf(rex); rv.Kind() != reflect.Map {
+		if rv := reflect.ValueOf(rex); rv.Kind() != reflect.Slice {
 			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerLocationRegexp)
 		}
-		rexMap := rex.(map[string]interface{})
-		for k, v := range rexMap {
+		rexSlice := rex.([]interface{})
+		for _, vItem := range rexSlice {
+			if rv := reflect.ValueOf(vItem); rv.Kind() != reflect.Map {
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerLocationRegexp)
+			}
 			item := &RegexpLocationItem{}
-			if k == CfgServerLocationRegexpExp {
-				vStr := goutil.GetStringValue(v)
-				if vStr == "" {
-					return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpExp)
-				}
-				if reObj, err := regexp.Compile(vStr); err != nil {
-					return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpExp)
-				} else {
-					item.uriRegexp = reObj
-				}
-			} else if k == CfgServerLocationRegexpFileRoot {
-				vStr := goutil.GetStringValue(v)
-				if vStr == "" {
-					return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpFileRoot)
-				}
-				item.fileRoot = vStr
-			} else if k == CfgServerLocationRegexpBackend {
-				vStr := goutil.GetStringValue(v)
-				if vStr == "" {
-					return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpBackend)
-				}
-				item.backend = vStr
-			} else if k == CfgServerLocationRegexpRequestFilter {
-				if expObj, err := jsonexp.NewJsonExpGroup(m.jsonexpDict, v); err != nil {
-					return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpRequestFilter)
-				} else {
-					item.requestFilter = expObj
-				}
-			} else if k == CfgServerLocationRegexpResponseFilter {
-				if expObj, err := jsonexp.NewJsonExpGroup(m.jsonexpDict, v); err != nil {
-					return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpResponseFilter)
-				} else {
-					item.responseFilter = expObj
+			vMap := vItem.(map[string]interface{})
+			for k, v := range vMap {
+				if k == CfgServerLocationRegexpExp {
+					vStr := goutil.GetStringValue(v)
+					if vStr == "" {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpExp)
+					}
+					if reObj, err := regexp.Compile(vStr); err != nil {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpExp)
+					} else {
+						item.uriRegexp = reObj
+					}
+				} else if k == CfgServerLocationRegexpFileRoot {
+					vStr := goutil.GetStringValue(v)
+					if vStr == "" {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpFileRoot)
+					}
+					item.fileRoot = vStr
+				} else if k == CfgServerLocationRegexpProxyPass {
+					vStr := goutil.GetStringValue(v)
+					if vStr == "" {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpProxyPass)
+					}
+					item.proxyPass = vStr
+				} else if k == CfgServerLocationRegexpBackend {
+					vStr := goutil.GetStringValue(v)
+					if vStr == "" {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpBackend)
+					}
+					item.backend = vStr
+				} else if k == CfgServerLocationRegexpRequestFilter {
+					if expObj, err := jsonexp.NewJsonExpGroup(m.jsonexpDict, v); err != nil {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpRequestFilter)
+					} else {
+						item.requestFilter = expObj
+					}
+				} else if k == CfgServerLocationRegexpResponseFilter {
+					if expObj, err := jsonexp.NewJsonExpGroup(m.jsonexpDict, v); err != nil {
+						return goutil.NewErrorf(ErrCodeCfgItem3Invalid, ErrMsgCfgItem3Invalid, CfgServer, CfgServerLocationRegexp, CfgServerLocationRegexpResponseFilter)
+					} else {
+						item.responseFilter = expObj
+					}
 				}
 			}
-			if vs.regexpLocation == nil {
-				vs.regexpLocation = &RegexpLocation{}
+			if item.uriRegexp != nil {
+				if vs.regexpLocation == nil {
+					vs.regexpLocation = &RegexpLocation{}
+				}
+				vs.regexpLocation.Items = append(vs.regexpLocation.Items, item)
 			}
-			vs.regexpLocation.Items = append(vs.regexpLocation.Items, item)
 		}
 	}
 
@@ -753,11 +845,11 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 	// group_list
 	if gl, ok := cfg[CfgBackendDefGroupList]; ok {
 		if rv := reflect.ValueOf(gl); rv.Kind() != reflect.Slice {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefGroupList)
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefGroupList)
 		}
 		for _, v := range gl.([]interface{}) {
 			if rv := reflect.ValueOf(v); rv.Kind() != reflect.String {
-				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefGroupList)
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefGroupList)
 			}
 			def.backendGroupList = append(def.backendGroupList, v.(string))
 		}
@@ -766,11 +858,11 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 	// backend_list
 	if bl, ok := cfg[CfgBackendDefBackendList]; ok {
 		if rv := reflect.ValueOf(bl); rv.Kind() != reflect.Slice {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendList)
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendList)
 		}
 		for _, v := range bl.([]interface{}) {
 			if rv := reflect.ValueOf(v); rv.Kind() != reflect.String {
-				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendList)
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendList)
 			}
 			backend, err := m.newBackend(v.(string))
 			if err.Code != ErrCodeNoError {
@@ -783,7 +875,7 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 	// method
 	if method, ok := cfg[CfgBackendDefBackendMethend]; ok {
 		if rv := reflect.ValueOf(method); rv.Kind() != reflect.String {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendMethend)
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendMethend)
 		}
 		methodStr := method.(string)
 		methodOk := false
@@ -794,26 +886,17 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 			}
 		}
 		if !methodOk {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendMethend)
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendMethend)
 		}
 		def.Method = methodStr
 	}
 
 	// param_key
-	if pk, ok := cfg[CfgBackendDefBackendMethend]; ok {
+	if pk, ok := cfg[CfgBackendDefBackendParamkey]; ok {
 		if rv := reflect.ValueOf(pk); rv.Kind() != reflect.String || pk.(string) == "" {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendParamkey)
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendParamkey)
 		}
 		def.ParamKey = pk.(string)
-	}
-
-	// jsonexp
-	if je, ok := cfg[CfgBackendDefJsonexp]; ok {
-		jeGrp, err := jsonexp.NewJsonExpGroup(m.jsonexpDict, je)
-		if err != nil {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefJsonexp)
-		}
-		def.JsonExp = jeGrp
 	}
 
 	// max_idle_conn
@@ -826,7 +909,7 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 	}
 
 	// wait_response_timeout
-	if timeout, ok := cfg[CfgBackendDefMaxIdleConn]; ok {
+	if timeout, ok := cfg[CfgBackendDefWaitResponseTimeout]; ok {
 		if i, ok := goutil.GetIntValue(timeout); ok {
 			if i > 0 {
 				def.WaitResponseTiemout = time.Duration(i) * time.Millisecond
@@ -834,12 +917,9 @@ func (m *Paddy) newBackendDef(cfg map[string]interface{}) goutil.Error {
 		}
 	}
 
-	if def.Alias != "" && len(def.BackendList) > 0 && def.Method != "" {
+	if def.Alias != "" && (len(def.backendGroupList) > 0 || len(def.BackendList) > 0) && def.Method != "" {
 		if def.Method == MethodUrlParam && def.ParamKey == "" {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendParamkey)
-		}
-		if def.Method == MethodJsonExp && def.JsonExp == nil {
-			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, CfgBackendDef, CfgBackendDefJsonexp)
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendDef, CfgBackendDefBackendParamkey)
 		}
 		if _, ok := m.backendDefs[def.Alias]; ok {
 			return goutil.NewErrorf(ErrCodeBackendDefDup, ErrMsgBackendDefDup, def.Alias)
@@ -869,17 +949,20 @@ func (m *Paddy) newBackend(addrStr string) (*Backend, goutil.Error) {
 	if portInt <= 0 || portInt >= int(math.MaxUint16) {
 		return nil, goutil.NewErrorf(ErrCodeNewBackendGroupFail, "invalid addr")
 	}
-	weightInt, err := strconv.Atoi(list[1])
-	if err != nil {
-		return nil, goutil.NewErrorf(ErrCodeNewBackendGroupFail, "invalid addr")
-	}
-	if weightInt < 1 || weightInt > 100 {
-		return nil, goutil.NewErrorf(ErrCodeNewBackendGroupFail, "invalid addr")
+	weightInt := 1
+	if len(list) > 1 {
+		weightInt, err = strconv.Atoi(list[1])
+		if err != nil {
+			return nil, goutil.NewErrorf(ErrCodeNewBackendGroupFail, "invalid addr")
+		}
+		if weightInt < 1 || weightInt > 100 {
+			return nil, goutil.NewErrorf(ErrCodeNewBackendGroupFail, "invalid addr")
+		}
 	}
 	return &Backend{Ip: ip, Port: uint16(portInt), Weight: weightInt}, ErrorNoError
 }
 
-func (m *Paddy) newBackendGroup(groupName string, addrList []string) goutil.Error {
+func (m *Paddy) newBackendGroup(groupName string, addrList []interface{}) goutil.Error {
 	if groupName == "" {
 		return goutil.NewErrorf(ErrCodeNewBackendGroupFail, "groupName is empty")
 	}
@@ -888,7 +971,10 @@ func (m *Paddy) newBackendGroup(groupName string, addrList []string) goutil.Erro
 	}
 	var backends []Backend
 	for _, v := range addrList {
-		if backend, err := m.newBackend(v); err.Code != ErrCodeNoError {
+		if rv := reflect.ValueOf(v); rv.Kind() != reflect.String {
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgBackendGroup, groupName)
+		}
+		if backend, err := m.newBackend(v.(string)); err.Code != ErrCodeNoError {
 			return err
 		} else {
 			backends = append(backends, *backend)
