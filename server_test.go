@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,10 +40,12 @@ func startListen() {
 	}
 }
 
-func TestResponseDirected(t *testing.T) {
-	return
+var one sync.Once
 
-	startListen()
+func TestResponseDirected(t *testing.T) {
+	// return
+	fmt.Println("TestResponseDirected\n=======================")
+	one.Do(startListen)
 	time.Sleep(time.Second * 2)
 	if resp, err := http.Get("http://localhost:8081/response_direct?echo=hello"); err != nil {
 		t.Fatal(err.Error())
@@ -54,9 +57,8 @@ func TestResponseDirected(t *testing.T) {
 }
 
 func TestProxyPass(t *testing.T) {
-	return
-	startListen()
-
+	one.Do(startListen)
+	fmt.Println("TestProxyPass\n=======================")
 	time.Sleep(time.Second * 2)
 	if resp, err := http.Get("http://localhost:8081/proxy_pass"); err != nil {
 		t.Fatal(err.Error())
@@ -68,11 +70,23 @@ func TestProxyPass(t *testing.T) {
 }
 
 func TestBackend(t *testing.T) {
-	// return
-	startListen()
-
+	one.Do(startListen)
+	fmt.Println("TestBackend\n=======================")
 	time.Sleep(time.Second * 2)
 	if resp, err := http.Get("http://localhost:8081/backend"); err != nil {
+		t.Fatal(err.Error())
+	} else {
+		bts, _ := io.ReadAll(resp.Body)
+		fmt.Println(resp.Status)
+		fmt.Println(string(bts))
+	}
+}
+
+func TestFileRoot(t *testing.T) {
+	one.Do(startListen)
+	fmt.Println("TestFileRoot\n=======================")
+	time.Sleep(time.Second * 2)
+	if resp, err := http.Get("http://localhost:8081/paddy/default.config"); err != nil {
 		t.Fatal(err.Error())
 	} else {
 		bts, _ := io.ReadAll(resp.Body)

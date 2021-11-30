@@ -324,7 +324,7 @@ func (m *Paddy) init() {
 			ResponseHeaderTimeout: time.Duration(DefaultBackendWaitResponseTimeout) * time.Millisecond,
 		},
 	}
-	m.fileServer = &FileServer{}
+	m.fileServer = NewFileServer(10 << 30)
 	m.handler = &PaddyHandler{paddy: m}
 	m.jsonexpDict = jsonexp.NewDictionary()
 	m.initJsonexpDict()
