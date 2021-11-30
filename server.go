@@ -207,7 +207,11 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if backend == "" {
-			done, proxyPass, backend, resp, err = m.paddy.doLocation(r, w, context)
+			var response *http.Response
+			done, proxyPass, backend, response, err = m.paddy.doLocation(r, w, context)
+			if response != nil {
+				resp = response
+			}
 			if err.Code != ErrCodeNoError {
 				glog.Errorf("uri: %s, do location fail, %d, %s", r.RequestURI, err.Code, err.Error())
 				break
@@ -425,7 +429,7 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 
 			proxyPass := reItem.proxyPass
 			if proxyPass == "" {
-				if i, ok := context.GetCtxData(JsonExpVarBackend); ok {
+				if i, ok := context.GetCtxData(JsonExpVarProxyPass); ok {
 					proxyPass = goutil.GetStringValue(i)
 				}
 			}
@@ -496,6 +500,10 @@ func (m *Paddy) doLocation(r *http.Request, w http.ResponseWriter, context gouti
 }
 
 func (m *Paddy) doBackend(proxyPass string, backend string, r *http.Request, context goutil.Context) (response *http.Response, e goutil.Error) {
+	if proxyPass == "" && backend == "" {
+		return nil, goutil.NewErrorf(ErrCodeBackendRequestFail, ErrMsgBackendRequestFail, "", "no backend no proxy")
+	}
+
 	var err error
 	var resp *http.Response
 	var noneBackend bool
@@ -511,11 +519,17 @@ func (m *Paddy) doBackend(proxyPass string, backend string, r *http.Request, con
 
 	if proxyPass != "" {
 		noneBackend = true
-		if backend != "" {
-			proxyPass = strings.ReplaceAll(proxyPass, MacroBackend, backend)
-		} else {
-			proxyPass = strings.ReplaceAll(proxyPass, MacroHost, r.URL.Host)
+		proxyPass = strings.ReplaceAll(proxyPass, MacroBackend, backend)
+		domain := ""
+		port := "80"
+		hostsParts := strings.Split(r.Host, ":")
+		if len(hostsParts) > 1 {
+			domain = hostsParts[0]
+			port = hostsParts[1]
 		}
+		proxyPass = strings.ReplaceAll(proxyPass, MacroHost, r.Host)
+		proxyPass = strings.ReplaceAll(proxyPass, MacroDomain, domain)
+		proxyPass = strings.ReplaceAll(proxyPass, MacroPort, port)
 		proxyPass = strings.ReplaceAll(proxyPass, MacroPath, r.URL.Path)
 		proxyPass = strings.ReplaceAll(proxyPass, MacroParams, r.URL.Query().Encode())
 		proxyPass = strings.ReplaceAll(proxyPass, MacroURI, r.URL.RequestURI())
@@ -528,11 +542,18 @@ func (m *Paddy) doBackend(proxyPass string, backend string, r *http.Request, con
 			if reqTemp.Host == backend {
 				noneBackend = false
 			}
-			r.Proto = reqTemp.Proto
-			r.ProtoMajor = reqTemp.ProtoMajor
-			r.ProtoMinor = reqTemp.ProtoMinor
-			r.URL = reqTemp.URL
-			r.Host = reqTemp.Host
+			reqTemp.Body = r.Body
+			reqTemp.Header = r.Header
+			*r = *reqTemp
+		}
+	} else {
+		if reqTemp, err := http.NewRequest(r.Method, "http://backend"+r.RequestURI, nil); err != nil {
+			return nil, goutil.NewErrorf(ErrCodeBackendRequestFail, ErrMsgBackendRequestFail, backend, err.Error())
+		} else {
+			noneBackend = false
+			reqTemp.Body = r.Body
+			reqTemp.Header = r.Header
+			*r = *reqTemp
 		}
 	}
 

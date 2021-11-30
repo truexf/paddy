@@ -24,7 +24,9 @@ const (
 
 	// can use in location_regexp.proxy_pass
 	MacroBackend = "{{backend}}"
+	MacroDomain  = "{{domain}}"
 	MacroHost    = "{{host}}"
+	MacroPort    = "{{port}}"
 	MacroURI     = "{{uri}}"
 	MacroPath    = "{{path}}"
 	MacroParams  = "{{params}}"
