@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,8 @@ func TestConfigLoad(t *testing.T) {
 	}
 }
 
+var paddyInst *Paddy
+
 func startListen() {
 	svr, err := NewPaddy("default.config")
 	if err.Code != ErrCodeNoError {
@@ -38,6 +41,7 @@ func startListen() {
 	if err := svr.StartListen(); err.Code != ErrCodeNoError {
 		panic(err.Error())
 	}
+	paddyInst = svr
 }
 
 var one sync.Once
@@ -92,5 +96,21 @@ func TestFileRoot(t *testing.T) {
 		bts, _ := io.ReadAll(resp.Body)
 		fmt.Println(resp.Status)
 		fmt.Println(string(bts))
+	}
+}
+
+func TestInheritedEnv(t *testing.T) {
+	one.Do(startListen)
+	fmt.Println("TestInheritedEnv\n==============")
+
+	newConfig, gErr := NewPaddy(paddyInst.GetConfigFile())
+	if gErr.Code != ErrCodeNoError {
+		t.Fatalf(gErr.Message)
+	}
+	allFiles := []*os.File{os.Stdin, os.Stdout, os.Stderr}
+	noCloseFds, envVarValue := newConfig.GenerateInheritedPortsEnv(uintptr(len(allFiles)), paddyInst)
+	fmt.Println(envVarValue)
+	for _, v := range noCloseFds {
+		fmt.Printf("%d\n", v.Fd())
 	}
 }

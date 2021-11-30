@@ -48,6 +48,7 @@ func main() {
 
 	signalDef()
 
+	defer glog.Flush()
 	s, err := paddy.NewPaddy(getConfigFile())
 	if err.Code == paddy.ErrCodeNoError {
 		instance = s

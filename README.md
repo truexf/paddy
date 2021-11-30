@@ -7,6 +7,20 @@ paddy提供以下功能：
 * http反向代理
 * 支持请求和响应插件
 
+### 部署
+#### 编译  
+```
+$ go build ./main/paddy.go
+```
+#### 运行  
+```
+$ ./paddy -configFile default.config
+```
+#### 热重启
+```
+$ kill -USR2 `cat paddy.pid`
+```
+
 ### paddy配置文件
 paddy配置文件基于json语法，支持双斜线开头的单行注释。配置格式请参考[默认配置文件](https://github.com/truexf/paddy/blob/master/default.config)   
 paddy配置文件支持强大的"[json表达式](https://github.com/truexf/goutil/tree/master/jsonexp)"语法。  

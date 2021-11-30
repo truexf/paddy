@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"math"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/golang/glog"
@@ -591,6 +593,17 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 		return goutil.NewErrorf(ErrCodeConfigReadFail, ErrMsgConfigReadFail, configFile, err.Error())
 	}
 
+	// pid file
+	if pidFile, ok := cfgMap[CfgPidFile]; ok {
+		fn := goutil.GetStringValue(pidFile)
+		if fn != "" {
+			pid := os.Getpid()
+			if err := ioutil.WriteFile(fn, []byte(fmt.Sprintf("%d", pid)), 0666); err != nil {
+				glog.Errorf("write pid file fail, %s", err.Error())
+			}
+		}
+	}
+
 	// include
 	if includeFiles, includeOk := cfgMap[CfgInclude]; includeOk {
 		// load includeFiles
@@ -1066,7 +1079,7 @@ func (m *Paddy) GenerateInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (
 	sort.Ints(ret)
 	curFd := beginFd
 	for _, portInt := range ret {
-		for port, lsn := range m.listeners {
+		for port, lsn := range originPaddy.listeners {
 			if portInt == int(port) {
 				if f, err := lsn.tcpListener.File(); err == nil {
 					noCloseFds = append(noCloseFds, f)
@@ -1085,10 +1098,13 @@ func (m *Paddy) GenerateInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (
 
 // envVarValue fd:port,fd:port,fd:port,...
 func (m *Paddy) GetInheritedPortsFromEnv(envVar string) (inheritedFds []uintptr, inheritedPorts []uint16) {
+
 	varStr, found := os.LookupEnv(envVar)
 	if !found {
+		glog.Infof("%s not found", envVar)
 		return nil, nil
 	}
+	glog.Infof("%s： %s", envVar, varStr)
 	list := strings.Split(varStr, ",")
 	for _, v := range list {
 		lst := strings.Split(v, ":")
@@ -1175,6 +1191,11 @@ func (m *Paddy) StartListen() goutil.Error {
 		}
 	}
 
+	if len(inheritedFds) > 0 {
+		if ppid := os.Getppid(); ppid > 1 {
+			syscall.Kill(ppid, syscall.SIGTERM)
+		}
+	}
 	m.ready = true
 	return goutil.NewError(ErrCodeNoError, "")
 }

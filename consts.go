@@ -81,6 +81,7 @@ const (
 )
 
 const (
+	CfgPidFile                       = "pid_file"
 	CfgLogDir                        = "log_dir"
 	CfgLogLevel                      = "log_level"
 	CfgInclude                       = "include"
