@@ -66,7 +66,7 @@ paddy通过goutil.LRUFileCache以LRU策略执行文件缓存，并提供目录�
 "location_regexp": [			
 			{
 				"exp": "^/paddy/default\\.config$",
-                // 返回本地目录 /tmp/paddy/default.config文件的内容
+				// 返回本地目录 /tmp/paddy/default.config文件的内容
 				"file_root": "/tmp"
 			}
             ...
@@ -99,9 +99,8 @@ backend主要用来支持paddy作为http反向代理。paddy预先定义后端�
 			{
 				"exp": "^\\/backend.*",
 				"backend": "login_server",
-                // 负载策略
-                "method": "roundrobin"
-
+				// 负载策略
+				"method": "roundrobin"
 			}，
  ...
 ```
