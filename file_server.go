@@ -69,7 +69,14 @@ func (m *FileServer) serve(fileRoot string, r *http.Request, w http.ResponseWrit
 		}
 	}
 	fn := filepath.Join(fileRoot, r.URL.Path)
-	ret, err := lruCache.Get(filepath.Join(fileRoot, r.URL.Path), since)
+	ext := filepath.Ext(fn)
+	if ext != "" {
+		ext = ext[1:]
+	}
+	if conentType, ok := MimeTypeMap[ext]; ok {
+		w.Header().Set("Content-Type", conentType)
+	}
+	ret, err := lruCache.Get(fn, since)
 	if err != nil {
 		if err != goutil.ErrorFileSizeLimited {
 			return false, goutil.NewError(ErrCodeFSNormal, err.Error())
