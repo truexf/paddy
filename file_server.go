@@ -78,6 +78,10 @@ func (m *FileServer) serve(fileRoot string, r *http.Request, w http.ResponseWrit
 	}
 	ret, err := lruCache.Get(fn, since)
 	if err != nil {
+		if err == goutil.ErrorFileNotModified {
+			w.WriteHeader(304) // content not modified
+			return true, ErrorNoError
+		}
 		if err != goutil.ErrorFileSizeLimited {
 			return false, goutil.NewError(ErrCodeFSNormal, err.Error())
 		}
