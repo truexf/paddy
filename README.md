@@ -154,10 +154,10 @@ type Plugin interface {
 * {{params}} 当前请求url\(http://domain:port/path?param1=xxx,...\)的param1=xxx,...   
    
 paddy的json表达式支持以下paddy专有jsonexp变量：   
-* $proxy_pass
-* $backend
-* $file_root
-* $set_response  
+* $proxy_pass  设置proxy_pass
+* $backend  设置backend
+* $file_root  设置file_root
+* $set_response  设置set_response
   
 以及paddy专有jsonexp对象：
 * $req  当前http请求对象，支持属性:  ver,host,method,path,uri
