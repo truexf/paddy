@@ -158,7 +158,8 @@ paddy的json表达式支持以下paddy专有jsonexp变量：
 * $backend
 * $file_root
 * $set_response  
-以及入选paddy专有jsonexp对象：
+  
+以及paddy专有jsonexp对象：
 * $req  当前http请求对象，支持属性:  ver,host,method,path,uri
 * $req_param 当前http请求对象的url参数对象，可以通过.操作符读取或设置参数值，如 $req_param.arg1
 * $req_header 当前http请求对象header对象，可以通过.操作符读取或设置header信息， 如 $req_header.content_type
