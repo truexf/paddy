@@ -16,7 +16,13 @@ $ go build ./main/paddy.go
 ```
 $ ./paddy -configFile default.config
 ```
+若不附带-configFile参数，则paddy默认从paddy执行程序文件所在目录查找并加载default.config  
+#### 参数文件校验
+```
+$ ./paddy -t default.config
+```
 #### 热重启
+热重启一般发生在修改配置之后需要使参数生效。  
 ```
 $ kill -USR2 `cat paddy.pid`
 ```
@@ -29,7 +35,7 @@ paddy的location配置支持"正则表达式"和"jsonexp"两种方式。  通过
 ### paddy的流量生命周期图  
 ![image](https://github.com/truexf/paddy/blob/master/lifetime.jpg)  
 
-### 直接配置http响应
+### 直接配置http响应  
 可在location_regexp的request_filter和rewponse_filter，或location_jsonexp中直接写入http响应，json表达式变量$set_response=1表示直接响应。如：  
 ```
 ...
@@ -85,7 +91,7 @@ backend主要用来支持paddy作为http反向代理。paddy预先定义后端�
 * minpending  最低负载+轮询
 * iphash 按客户端ip地址进行哈希分布
 * uri_param 根据uri参数值进行哈希分布
-* random 随机选择
+* random 随机选择  
 配置举例：   
 ```
 ...

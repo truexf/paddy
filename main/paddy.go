@@ -23,12 +23,19 @@ import (
 )
 
 var (
-	configFile = flag.String("configFile", "", "config file")
-	instance   *paddy.Paddy
+	configFile     = flag.String("configFile", "", "config file")
+	testConfigFile = flag.String("t", "", "config file to test")
+	instance       *paddy.Paddy
 )
 
 func main() {
 	flag.Parse()
+
+	if *testConfigFile != "" {
+		validateConfigFile(*testConfigFile)
+		return
+	}
+
 	ReSetLogConf()
 
 	evn := os.Environ()
@@ -63,6 +70,20 @@ func main() {
 
 	c := make(chan int)
 	<-c
+}
+
+func validateConfigFile(fn string) {
+	if fn, err := filepath.Abs(fn); err != nil {
+		fmt.Println(err.Error())
+	} else {
+		_, err := paddy.NewPaddy(fn)
+		if err.Code != paddy.ErrCodeNoError {
+			fmt.Printf("config file invalid: %s\n", err.Error())
+		} else {
+			fmt.Printf("the configuration file %s is ok\n", fn)
+		}
+	}
+
 }
 
 func ReSetLogConf() {
