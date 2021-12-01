@@ -5,7 +5,7 @@ paddy提供以下功能：
 * 目录文件服务器
 * proxy_pass代理
 * http反向代理
-* 支持请求和响应插件
+* 支持请求和响应插件   
 
 ### 部署
 #### 编译  
@@ -31,6 +31,7 @@ $ kill -USR2 `cat paddy.pid`
 paddy配置文件基于json语法，支持双斜线开头的单行注释。配置格式请参考[默认配置文件](https://github.com/truexf/paddy/blob/master/default.config)   
 paddy配置文件支持强大的"[json表达式](https://github.com/truexf/goutil/tree/master/jsonexp)"语法。  
 paddy的location配置支持"正则表达式"和"jsonexp"两种方式。  通过在request_filter和response_filter中对请求和响应进行灵活的处理  
+location配置中，优先级从高到低次序： 直接配置响应 > file_root > proxy_pass > backend   
 
 ### paddy的流量生命周期图  
 ![image](https://github.com/truexf/paddy/blob/master/lifetime.jpg)  
@@ -45,11 +46,11 @@ paddy的location配置支持"正则表达式"和"jsonexp"两种方式。  通过
 				"response_filter": [
 					[
 						[
-                            // 表示直接响应
+							// 表示直接响应
 							["$set_response","=",1],
-                            // 设置响应的http status code = 200
+							// 设置响应的http status code = 200
 							["$resp.status","=",200],
-                            // 设置响应的http body
+							// 设置响应的http body
 							["$resp.body","=","response from {{$req.path}},{{$req_param.echo}}"]
 						]
 					]
@@ -79,7 +80,6 @@ paddy通过goutil.LRUFileCache以LRU策略执行文件缓存，并提供目录�
 "location_regexp": [
 			{
 				"exp": "^\\/proxy_pass.*",
-				"backend": "login_server",                
 				"proxy_pass": "http://192.168.0.1:80/real_path"
 			}
 ...
