@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -284,6 +285,7 @@ func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // paddy web server
 type Paddy struct {
+	pidFile               string
 	noneBackendHttpClient *http.Client
 	handler               *PaddyHandler
 	jsonexpDict           *jsonexp.Dictionary
@@ -595,12 +597,9 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 
 	// pid file
 	if pidFile, ok := cfgMap[CfgPidFile]; ok {
-		fn := goutil.GetStringValue(pidFile)
-		if fn != "" {
-			pid := os.Getpid()
-			if err := ioutil.WriteFile(fn, []byte(fmt.Sprintf("%d", pid)), 0666); err != nil {
-				glog.Errorf("write pid file fail, %s", err.Error())
-			}
+		s := goutil.GetStringValue(pidFile)
+		if m.pidFile, err = filepath.Abs(s); err != nil {
+			return goutil.NewErrorf(ErrCodeConfigReadFail, ErrMsgConfigReadFail, configFile, "invalid pid_file")
 		}
 	}
 
@@ -1191,11 +1190,23 @@ func (m *Paddy) StartListen() goutil.Error {
 		}
 	}
 
+	// kill parent process
 	if len(inheritedFds) > 0 {
 		if ppid := os.Getppid(); ppid > 1 {
 			syscall.Kill(ppid, syscall.SIGTERM)
 		}
 	}
+
+	// write pid file
+	if m.pidFile != "" {
+		pid := os.Getpid()
+		if err := ioutil.WriteFile(m.pidFile, []byte(fmt.Sprintf("%d", pid)), 0666); err != nil {
+			glog.Errorf("write pid file fail, %s", err.Error())
+		} else {
+			glog.Infof("write pid %d to %s\n", pid, m.pidFile)
+		}
+	}
+
 	m.ready = true
 	return goutil.NewError(ErrCodeNoError, "")
 }
