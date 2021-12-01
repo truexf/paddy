@@ -6,7 +6,7 @@ paddy提供以下功能：
 * proxy_pass代理
 * http反向代理
 * 支持请求和响应插件   
-
+   
 ### 部署
 #### 编译  
 ```
@@ -26,16 +26,16 @@ $ ./paddy -t default.config
 ```
 $ kill -USR2 `cat paddy.pid`
 ```
-
+   
 ### paddy配置文件
 paddy配置文件基于json语法，支持双斜线开头的单行注释。配置格式请参考[默认配置文件](https://github.com/truexf/paddy/blob/master/default.config)   
 paddy配置文件支持强大的"[json表达式](https://github.com/truexf/goutil/tree/master/jsonexp)"语法。  
 paddy的location配置支持"正则表达式"和"jsonexp"两种方式。  通过在request_filter和response_filter中对请求和响应进行灵活的处理  
 location配置中，优先级从高到低次序： 直接配置响应 > file_root > proxy_pass > backend   
-
+   
 ### paddy的流量生命周期图  
 ![image](https://github.com/truexf/paddy/blob/master/lifetime.jpg)  
-
+   
 ### 直接配置http响应  
 可在location_regexp的request_filter和rewponse_filter，或location_jsonexp中直接写入http响应，json表达式变量$set_response=1表示直接响应。如：  
 ```
@@ -59,7 +59,7 @@ location配置中，优先级从高到低次序： 直接配置响应 > file_roo
             ...
 
 ```
-
+   
 ### 目录文件服务器
 paddy通过goutil.LRUFileCache以LRU策略执行文件缓存，并提供目录文件服务。配置目录文件的方式通过file_root参数进行，如下：  
 ```
@@ -72,7 +72,7 @@ paddy通过goutil.LRUFileCache以LRU策略执行文件缓存，并提供目录�
 			}
             ...
 ```
-
+   
 ### proxy_pass
 与nginx类似，proxy_pass指示一个url,服务器向该url请求获取响应，并响应给客户端。如下：  
 ```
@@ -84,7 +84,7 @@ paddy通过goutil.LRUFileCache以LRU策略执行文件缓存，并提供目录�
 			}
 ...
 ```
-
+   
 ### backend
 backend主要用来支持paddy作为http反向代理。paddy预先定义后端服务器或服务器组，一个backend包含一组后端服务器地址，paddy支持对backend的多种负载策略：  
 * roundrobin  轮询
@@ -104,7 +104,27 @@ backend主要用来支持paddy作为http反向代理。paddy预先定义后端�
 			}，
  ...
 ```
-
+除了这上述负载策略以外， 可以通过json表达式(jsonexp)，以语义控制的方式选择后端服务器，达到非常灵活的负载能力。这也是"json表达式"的强大之处，举例：
+```
+{
+	"request_filter": [
+		[
+			// 如果url参数user_name是“bob,tom,franky”之一，则选择backend_engineer作为后端服务器
+			["$req_param.user_name", "in", "bob,tom,franky"],
+			[
+				["$backend","=","backend_engineer"],
+				["$break","=",1]
+			]
+		]，
+		[
+			// 如果url参数user_age > 18, 则选择向http://192.168.0.1/adult?{{params}}获取响应
+			["$req_param.user_age", ">", 18],
+			["$proxy_pass","=","http://192.168.0.1/adult?{{params}}"]
+		]
+	]
+}
+```
+   
 ### 插件管理  
 paddy除了可以支持上述配置功能以外。如果需要非常个性化的处理，或希望减少流量转发而是直接处理请求，等等其他功能，则可以通过编写插件，然后将包含插件代码的整个代码完整编译部署。paddy插件提供最高的可控性。编写插件的方式： 编写支持插件接口的组件，并通过Paddy.RegisterPlugin注册即可。  
 ```
@@ -122,6 +142,31 @@ type Plugin interface {
 	ResponseHeaderCompleted(originResponse *http.Response, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, newResponse *http.Response, err goutil.Error)
 }
 ```
+   
+### 宏与全局变量   
+宏将在运行是被实际值替换，location的配置的proxy_pass参数支持如下宏：  
+* {{backend}}  当前的backend，backend由一个或多个“服务器地址:端口组成”
+* {{domain}} 当前请求url的host(domain:port)的domain部分
+* {{port}} 当前请求url的host(domain:port)的port部分
+* {{host}} 当前请求url的host(domain:port)
+* {{uri}} 当前请求url(http://domain:port/path?param1=xxx,...)的/path?param1=xxx,...
+* {{path}} 当前请求url(http://domain:port/path?param1=xxx,...)的/path
+* {{params}} 当前请求url(http://domain:port/path?param1=xxx,...)的param1=xxx,...   
+   
+paddy的json表达式支持以下paddy专有jsonexp变量：   
+* $proxy_pass
+* $backend
+* $file_root
+* $set_response  
+以及入选paddy专有jsonexp对象：
+* $req  当前http请求对象，支持属性:  ver,host,method,path,uri
+* $req_param 当前http请求对象的url参数对象，可以通过.操作符读取或设置参数值，如 $req_param.arg1
+* $req_header 当前http请求对象header对象，可以通过.操作符读取或设置header信息， 如 $req_header.content_type
+* $resp 当前http响应对象，支持属性：status,body
+* $resp_header 当前http响应对象的header对象，可用通过.操作符读取或设置header信息， 如\["$resp_header.Content_Encoding","=","gzip"\]  
+
+
+
 
 
 
