@@ -144,7 +144,7 @@ type Plugin interface {
 ```
    
 ### 宏与全局变量   
-宏将在运行是被实际值替换，location的配置的proxy_pass参数支持如下宏：  
+宏将在运行时被实际值替换，location的配置的proxy_pass参数支持如下宏：  
 * {{backend}}  当前的backend，backend由一个或多个“服务器地址:端口组成”
 * {{domain}} 当前请求url的host(domain:port)的domain部分
 * {{port}} 当前请求url的host(domain:port)的port部分
