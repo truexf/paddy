@@ -104,7 +104,7 @@ backend主要用来支持paddy作为http反向代理。paddy预先定义后端�
 			}，
  ...
 ```
-除了这上述负载策略以外， 可以通过json表达式(jsonexp)，以语义控制的方式选择后端服务器，达到非常灵活的负载能力。这也是"json表达式"的强大之处，举例：
+除了这上述负载策略以外， 可以通过json表达式(jsonexp)，以语义控制的方式选择后端服务器，达到非常灵活的负载能力。这也是"[json表达式](https://github.com/truexf/goutil/tree/master/jsonexp)"的强大之处，举例：
 ```
 {
 	"request_filter": [
@@ -145,7 +145,7 @@ type Plugin interface {
    
 ### 宏与全局变量   
 宏将在运行时被实际值替换，location的配置的proxy_pass参数支持如下宏：  
-* {{backend}}  当前的backend，backend由一个或多个“服务器地址:端口组成”
+* {{backend}}  当前的backend，backend由一个或多个“服务器地址:端口”组成
 * {{domain}} 当前请求url的host(domain:port)的domain部分
 * {{port}} 当前请求url的host(domain:port)的port部分
 * {{host}} 当前请求url的host(domain:port)
