@@ -21,7 +21,6 @@ func (m *DemoPlugin) ID() string {
 	return "demo"
 }
 
-// 在http请求接收完成后介入
 // hijacked 是否劫持：true则必须实现respWriter写响应；false时不准向respWriter写响应，可以返回backend(此时框架直接去请求backend而不再走location匹配流程，否则框架执行location匹配)
 func (m *DemoPlugin) RequestHeaderCompleted(req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, backend string, err goutil.Error) {
 	if req.URL.Path == "/ping" {
