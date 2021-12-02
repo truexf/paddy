@@ -5,7 +5,11 @@
 package paddy
 
 import (
+	"fmt"
+	"math"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/truexf/goutil/lblhttpclient"
@@ -93,4 +97,28 @@ func RemoteIp(r *http.Request) string {
 	}
 	return ""
 
+}
+
+func validateTcp4Addr(addr string) bool {
+	if addr == "" {
+		return false
+	}
+	lst := strings.Split(addr, "#")
+	if len(lst) > 2 {
+		return false
+	}
+	if w, err := strconv.Atoi(lst[1]); err != nil || w < 1 || w > 100 {
+		return false
+	}
+	lst = strings.Split(lst[0], ":")
+	if len(lst) != 2 {
+		return false
+	}
+	if port, err := strconv.Atoi(lst[1]); err != nil || port <= 0 || port >= math.MaxUint16 {
+		return false
+	}
+	if _, err := net.ResolveTCPAddr("tcp4", fmt.Sprintf("%s:%s", lst[0], lst[1])); err != nil {
+		return false
+	}
+	return true
 }
