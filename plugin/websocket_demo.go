@@ -56,5 +56,5 @@ func (m *WebsocketPlugin) RequestHeaderCompleted(req *http.Request, respWriter h
 // 框架在得到响应后，给客户端发送响应之前介入
 // hijacked 是否劫持：true则必须实现respWriter写响应；false时，不准向respWriter写响应，可以返回newResponse(此时框架以newResponse写响应，否则以originResponse写响应）
 func (m *WebsocketPlugin) ResponseHeaderCompleted(originResponse *http.Response, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, newResponse *http.Response, err goutil.Error) {
-	return true, originResponse, paddy.ErrorNoError
+	return false, originResponse, paddy.ErrorNoError
 }
