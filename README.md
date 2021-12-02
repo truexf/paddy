@@ -4,9 +4,9 @@ paddy提供以下功能：
 * 直接配置http响应
 * 目录文件服务器（小文件采用LRU缓存，大文件采用sendfile零内存拷贝）
 * proxy_pass代理
-* http反向代理（七层负载均衡）
+* http反向代理与负载均衡
 * 支持HTTP请求和响应插件   
-* TCP流量代理（四层负责均衡，支持splice零内存拷贝）
+* TCP流量代理与负载均衡（支持零内存拷贝）
    
 ### 部署
 #### 编译  
@@ -167,7 +167,7 @@ paddy的json表达式支持以下paddy专有jsonexp变量：
 * $resp 当前http响应对象，支持属性：status,body
 * $resp_header 当前http响应对象的header对象，可用通过.操作符读取或设置header信息， 如\["$resp_header.Content_Encoding","=","gzip"\]    
 
-### TCP流量代理  
+### TCP流量代理与负载均衡    
 paddy站在go-runtime这个巨人的肩膀上，支持内存零拷贝技术，尽可能减少流量转发带来的延迟以及降低负载。  
 该功能通过upstream和tcp_server两个配置参数进行配置，[点击这里查看配置参考](https://github.com/truexf/paddy/blob/master/upstream.config)  
 
