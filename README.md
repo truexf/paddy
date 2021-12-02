@@ -168,7 +168,7 @@ paddy的json表达式支持以下paddy专有jsonexp变量：
 * $resp_header 当前http响应对象的header对象，可用通过.操作符读取或设置header信息， 如\["$resp_header.Content_Encoding","=","gzip"\]    
 
 ### TCP流量代理  
-paddy站在go-runtime这个巨人的肩膀上，支持内存零拷贝技术，最大成都减少流量转发带来的延迟和降低负载。  
+paddy站在go-runtime这个巨人的肩膀上，支持内存零拷贝技术，尽可能减少流量转发带来的延迟以及降低负载。  
 该功能通过upstream和tcp_server两个配置参数进行配置，[点击这里查看配置参考](https://github.com/truexf/paddy/blob/master/upstream.config)  
 
 
