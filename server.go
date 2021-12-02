@@ -123,6 +123,106 @@ func (m *VirtualServer) init() {
 	m.hosts = make(map[string][]byte)
 }
 
+// tcp server
+type TcpServer struct {
+	paddy       *Paddy
+	ready       bool
+	listeners   map[uint16]*net.TCPListener
+	upstream    string
+	upstreamObj *TcpLbClient
+}
+
+func (m *TcpServer) startListen() error {
+	inheritedPortsEnvVar := EnvVarInheritedListenerTcp
+	inheritedFds, inheritedPorts := m.paddy.GetInheritedPortsFromEnv(inheritedPortsEnvVar)
+	findInheritedListener := func(port uint16) (*net.TCPListener, bool) {
+		for i, v := range inheritedPorts {
+			if port == v {
+				lsn, _ := newInheritedListener(inheritedFds[i])
+				return lsn, true
+			}
+		}
+		return nil, false
+	}
+
+	mp := make(map[uint16]*net.TCPListener)
+	for port := range m.listeners {
+		var err error
+		var lsn net.Listener
+		found := false
+		lsn, found = findInheritedListener(port)
+		if !found {
+			lsn, err = net.Listen("tcp4", fmt.Sprintf(":%d", port))
+			if err != nil {
+				return err
+			}
+		}
+		mp[port] = lsn.(*net.TCPListener)
+	}
+
+	m.listeners = mp
+	for port, lsn := range mp {
+		m.serve(port, lsn)
+	}
+
+	m.ready = true
+	return nil
+}
+
+func (m *TcpServer) serve(port uint16, listener *net.TCPListener) {
+	go func() {
+		for {
+			if clientConn, err := m.acceptConn(port, listener); err != nil {
+				glog.Errorf("accept connection fail, %s", err.Error())
+				return
+			} else {
+				clientAddr := clientConn.RemoteAddr().String()
+				backendConn, err := m.upstreamObj.ConnectBackend(clientAddr)
+				if err != nil {
+					glog.Errorf("connect upstream: %s fail, %s", m.upstream, err.Error())
+					clientConn.Close()
+				}
+				backAddr := backendConn.RemoteAddr().String()
+				// client => backend
+				go func(client, backend *net.TCPConn) {
+					if _, err := io.Copy(backend, client); err != nil {
+						glog.Errorf("client %s => backend %s, connection closed unnormal, %s", clientAddr, backAddr, err.Error())
+					}
+					clientConn.Close()
+					backendConn.Close()
+					m.upstreamObj.removeConn(clientAddr)
+
+				}(clientConn, backendConn)
+				// backend => client
+				go func(client, backend *net.TCPConn) {
+					if _, err := io.Copy(client, backend); err != nil {
+						glog.Errorf("backend %s => client %s, connection closed unnormal, %s", backAddr, clientAddr, err.Error())
+					}
+					clientConn.Close()
+					backendConn.Close()
+					m.upstreamObj.removeConn(clientAddr)
+				}(clientConn, backendConn)
+			}
+		}
+	}()
+}
+
+func (m *TcpServer) acceptConn(port uint16, listener *net.TCPListener) (*net.TCPConn, error) {
+	for {
+		netConn, err := listener.Accept()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				time.Sleep(time.Second)
+				continue
+			} else {
+				return nil, err
+			}
+		}
+		glog.Infof("listen port %d, accepted new connection: %s", port, netConn.RemoteAddr().String())
+		return netConn.(*net.TCPConn), nil
+	}
+}
+
 type PaddyHandler struct {
 	paddy *Paddy
 }
@@ -161,6 +261,13 @@ func (m *PaddyHandler) pluginResponseAdapter(plugin Plugin, originResponse *http
 		}
 	}()
 	return plugin.ResponseHeaderCompleted(originResponse, respWriter, context)
+}
+
+type Upstream struct {
+	alias       string
+	method      string
+	backendList []string
+	connTimeout time.Duration
 }
 
 func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -290,6 +397,8 @@ type Paddy struct {
 	handler               *PaddyHandler
 	jsonexpDict           *jsonexp.Dictionary
 	fileServer            *FileServer
+	upstreams             map[string]*Upstream
+	tcpServers            []*TcpServer //map[port]*TcpServer
 	backendGroups         map[string]*BackendGroup
 	backendDefs           map[string]*BackendDef
 	listeners             map[uint16]*Listener
@@ -337,6 +446,8 @@ func (m *Paddy) init() {
 	m.listeners = make(map[uint16]*Listener)
 	m.vServers = make(map[uint16]map[string]*VirtualServer)
 	m.plugin = make([]Plugin, 0)
+	m.tcpServers = make([]*TcpServer, 0)
+	m.upstreams = make(map[string]*Upstream)
 }
 
 func (m *Paddy) initJsonexpDict() {
@@ -620,6 +731,23 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 		}
 	}
 
+	// upstream
+	if upstream, ok := cfgMap[CfgUpstream]; ok {
+		if rv := reflect.ValueOf(upstream); rv.Kind() != reflect.Slice {
+			return goutil.NewErrorf(ErrCodeCfgItemInvalid, ErrMsgCfgItemInvalid, CfgUpstream)
+		}
+		list := upstream.([]interface{})
+		for _, v := range list {
+			if rv := reflect.ValueOf(v); rv.Kind() != reflect.Map {
+				return goutil.NewErrorf(ErrCodeCfgItemInvalid, ErrMsgCfgItemInvalid, CfgUpstream)
+			}
+			obj := v.(map[string]interface{})
+			if gErr := m.newUpstream(obj); gErr.Code != ErrCodeNoError {
+				return gErr
+			}
+		}
+	}
+
 	// backend_group
 	if backendGroup, bgOk := cfgMap[CfgBackendGroup]; bgOk {
 		if rv := reflect.ValueOf(backendGroup); rv.Kind() != reflect.Map {
@@ -663,6 +791,38 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 		}
 	}
 
+	// tcp_server
+	if server, ok := cfgMap[CfgTcpServer]; ok {
+		if rv := reflect.ValueOf(server); rv.Kind() != reflect.Map {
+			return goutil.NewErrorf(ErrCodeCfgItemInvalid, ErrMsgCfgItemInvalid, CfgTcpServer)
+		}
+		if gErr := m.newTcpServer(server.(map[string]interface{})); gErr.Code != ErrCodeNoError {
+			return gErr
+		}
+	}
+
+	// net tcp_server.tcpLbClient & validate port duplicate
+	if rootCfg {
+		for _, v := range m.tcpServers {
+			for port := range v.listeners {
+				for httpPort := range m.vServers {
+					if httpPort == port {
+						return goutil.NewErrorf(ErrCodeListenPortDup, ErrMsgListenPortDup, port)
+					}
+				}
+			}
+			if us, ok := m.upstreams[v.upstream]; !ok {
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgTcpServer, CfgTcpServerUpstream)
+			} else {
+				if o, err := newTcpLbClient(us.backendList, us.method, us.connTimeout); err != nil {
+					return goutil.NewErrorf(ErrCodeNewUpstream, ErrMsgNewUpstream, err.Error())
+				} else {
+					v.upstreamObj = o
+				}
+			}
+		}
+	}
+
 	// append backend from backendGroup
 	if rootCfg {
 		for _, def := range m.backendDefs {
@@ -691,16 +851,55 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 	}
 
 	// create backend loadbalance client
-	for _, v := range m.backendDefs {
-		v.createLbClient()
+	if rootCfg {
+		for _, v := range m.backendDefs {
+			v.createLbClient()
+		}
 	}
 
 	return ErrorNoError
 }
 
+func (m *Paddy) newTcpServer(cfg map[string]interface{}) goutil.Error {
+	if cfg == nil {
+		return goutil.NewErrorf(ErrCodeNewTcpServerFail, "cfg map is nil")
+	}
+
+	svr := &TcpServer{paddy: m, listeners: make(map[uint16]*net.TCPListener)}
+	if listen, ok := cfg[CfgTcpServerListen]; ok {
+		if rv := reflect.ValueOf(listen); rv.Kind() != reflect.Slice {
+			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgTcpServer, CfgTcpServerListen)
+		}
+		for _, v := range listen.([]interface{}) {
+			port := goutil.GetIntValueDefault(v, 0)
+			if port <= 0 || port >= int64(math.MaxUint16) {
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgTcpServer, CfgTcpServerListen)
+			}
+			if _, ok := svr.listeners[uint16(port)]; ok {
+				return goutil.NewErrorf(ErrCodeListenPortDup, ErrMsgListenPortDup, port)
+			}
+			for _, ts := range m.tcpServers {
+				if _, ok := ts.listeners[uint16(port)]; ok {
+					return goutil.NewErrorf(ErrCodeListenPortDup, ErrMsgListenPortDup, port)
+				}
+			}
+			svr.listeners[uint16(port)] = nil
+		}
+	}
+	if upstream, ok := cfg["upstream"]; ok {
+		svr.upstream = goutil.GetStringValue(upstream)
+	}
+	if svr.upstream != "" && len(svr.listeners) > 0 {
+		m.tcpServers = append(m.tcpServers, svr)
+	}
+
+	return ErrorNoError
+
+}
+
 func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 	if cfg == nil {
-		return goutil.NewErrorf(ErrCodeNewServerFail, "cfg map is nil")
+		return goutil.NewErrorf(ErrCodeNewTcpServerFail, "cfg map is nil")
 	}
 
 	vs := &VirtualServer{}
@@ -1038,6 +1237,47 @@ func (m *Paddy) newBackend(addrStr string) (*Backend, goutil.Error) {
 	return &Backend{Ip: ip, Port: uint16(portInt), Weight: weightInt}, ErrorNoError
 }
 
+func (m *Paddy) newUpstream(obj map[string]interface{}) goutil.Error {
+	if len(obj) == 0 {
+		return goutil.NewErrorf(ErrCodeNewUpstream, ErrMsgNewUpstream, "map is empty")
+	}
+
+	ret := &Upstream{backendList: make([]string, 0)}
+	for k, v := range obj {
+		switch k {
+		case CfgUpstreamAlias:
+			ret.alias = goutil.GetStringValue(v)
+			if _, ok := m.upstreams[ret.alias]; ok {
+				return goutil.NewErrorf(ErrCodeUpstreamDup, ErrMsgUpstreamDup, ret.alias)
+			}
+		case CfgUpstreamConnTimeout:
+			ret.connTimeout = time.Duration(goutil.GetIntValueDefault(v, 0)) * time.Millisecond
+		case CfgUpstreamMethod:
+			ret.method = goutil.GetStringValue(v)
+			if !isTcpMethod(ret.method) {
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgUpstream, CfgUpstreamMethod)
+			}
+		case CfgUpstreamBackendList:
+			if rv := reflect.ValueOf(v); rv.Kind() != reflect.Slice {
+				return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgUpstream, CfgUpstreamBackendList)
+			}
+			for _, backend := range v.([]interface{}) {
+				s := goutil.GetStringValue(backend)
+				if !validateTcp4Addr(s) {
+					return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgUpstream, CfgUpstreamBackendList)
+				}
+				ret.backendList = append(ret.backendList, s)
+			}
+		}
+	}
+	if ret.alias == "" || ret.method == "" || len(ret.backendList) == 0 {
+		return goutil.NewErrorf(ErrCodeNewUpstream, ErrMsgNewUpstream, "need more params definition")
+	}
+	m.upstreams[ret.alias] = ret
+
+	return ErrorNoError
+}
+
 func (m *Paddy) newBackendGroup(groupName string, addrList []interface{}) goutil.Error {
 	if groupName == "" {
 		return goutil.NewErrorf(ErrCodeNewBackendGroupFail, "groupName is empty")
@@ -1064,10 +1304,35 @@ func (m *Paddy) newBackendGroup(groupName string, addrList []interface{}) goutil
 	return goutil.NewError(ErrCodeNoError, "")
 }
 
+func (m *Paddy) findHttpListenerFile(portInt uint16) *os.File {
+	for port, lsn := range m.listeners {
+		if portInt == port {
+			if f, err := lsn.tcpListener.File(); err == nil {
+				return f
+			}
+		}
+	}
+	return nil
+}
+
+func (m *Paddy) findTcpListenerFile(portInt uint16) *os.File {
+	for _, ts := range m.tcpServers {
+		for port, lsn := range ts.listeners {
+			if portInt == port {
+				if f, err := lsn.File(); err == nil {
+					return f
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // envVarValue fd:port,fd:port,fd:port,...
-func (m *Paddy) GenerateInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (noCloseFds []*os.File, envVarValue string) {
+func (m *Paddy) GenerateHttpInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (noCloseFds []*os.File, envVarValue string) {
 	var ret []int
 
+	// http listener
 	for k, lsnO := range originPaddy.listeners {
 		// 如果新老配置的端口相同，tls相同，保留该句柄不关闭供子进程继承
 		if lsn, ok := m.listeners[k]; ok && lsn.tls == lsnO.tls {
@@ -1078,17 +1343,44 @@ func (m *Paddy) GenerateInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (
 	sort.Ints(ret)
 	curFd := beginFd
 	for _, portInt := range ret {
-		for port, lsn := range originPaddy.listeners {
-			if portInt == int(port) {
-				if f, err := lsn.tcpListener.File(); err == nil {
-					noCloseFds = append(noCloseFds, f)
-					if envVarValue != "" {
-						envVarValue += ","
-					}
-					envVarValue += fmt.Sprintf("%d:%d", curFd, portInt)
-					curFd++
+		if f := originPaddy.findHttpListenerFile(uint16(portInt)); f != nil {
+			noCloseFds = append(noCloseFds, f)
+			if envVarValue != "" {
+				envVarValue += ","
+			}
+			envVarValue += fmt.Sprintf("%d:%d", curFd, portInt)
+			curFd++
+		}
+	}
+
+	return noCloseFds, envVarValue
+}
+
+// envVarValue fd:port,fd:port,fd:port,...
+func (m *Paddy) GenerateTcpInheritedPortsEnv(beginFd uintptr, originPaddy *Paddy) (noCloseFds []*os.File, envVarValue string) {
+	var ret []int
+
+	// tcp
+	for _, ov := range originPaddy.tcpServers {
+		for k := range ov.listeners {
+			for _, nv := range m.tcpServers {
+				if _, ok := nv.listeners[k]; ok {
+					ret = append(ret, int(k))
 				}
 			}
+		}
+	}
+
+	sort.Ints(ret)
+	curFd := beginFd
+	for _, portInt := range ret {
+		if f := originPaddy.findTcpListenerFile(uint16(portInt)); f != nil {
+			noCloseFds = append(noCloseFds, f)
+			if envVarValue != "" {
+				envVarValue += ","
+			}
+			envVarValue += fmt.Sprintf("%d:%d", curFd, portInt)
+			curFd++
 		}
 	}
 
@@ -1139,7 +1431,7 @@ func newInheritedListener(fd uintptr) (*net.TCPListener, error) {
 }
 
 func (m *Paddy) StartListen() goutil.Error {
-	inheritedPortsEnvVar := EnvVarInheritedListener
+	inheritedPortsEnvVar := EnvVarInheritedListenerHttp
 	inheritedFds, inheritedPorts := m.GetInheritedPortsFromEnv(inheritedPortsEnvVar)
 	findInheritedListener := func(port uint16) *net.TCPListener {
 		for i, v := range inheritedPorts {
@@ -1151,6 +1443,14 @@ func (m *Paddy) StartListen() goutil.Error {
 		return nil
 	}
 
+	// tcp listen
+	for _, v := range m.tcpServers {
+		if err := v.startListen(); err != nil {
+			return goutil.NewErrorf(ErrCodeCommonError, fmt.Sprintf("listn tcp server fail, %s", err.Error()))
+		}
+	}
+
+	// http listen
 	for port, lsnObj := range m.listeners {
 		lsn := findInheritedListener(port)
 		if lsn == nil {

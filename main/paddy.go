@@ -209,10 +209,13 @@ func restartProcess() (err error) {
 	if gErr.Code != paddy.ErrCodeNoError {
 		return fmt.Errorf(gErr.Error())
 	}
-	noCloseFds, envVarValue := newConfig.GenerateInheritedPortsEnv(uintptr(len(allFiles)), instance)
+	noCloseFdsHttp, envVarValueHttp := newConfig.GenerateHttpInheritedPortsEnv(uintptr(len(allFiles)), instance)
+	noCloseFdsTcp, envVarValueTcp := newConfig.GenerateTcpInheritedPortsEnv(uintptr(len(allFiles)+len(noCloseFdsHttp)), instance)
 
-	allFiles = append(allFiles, noCloseFds...)
-	env = append(env, fmt.Sprintf("%s=%s", paddy.EnvVarInheritedListener, envVarValue))
+	allFiles = append(allFiles, noCloseFdsHttp...)
+	allFiles = append(allFiles, noCloseFdsTcp...)
+	env = append(env, fmt.Sprintf("%s=%s", paddy.EnvVarInheritedListenerHttp, envVarValueHttp))
+	env = append(env, fmt.Sprintf("%s=%s", paddy.EnvVarInheritedListenerTcp, envVarValueTcp))
 
 	_, err = os.StartProcess(argv0, os.Args, &os.ProcAttr{
 		Dir:   wd,

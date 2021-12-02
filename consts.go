@@ -18,7 +18,8 @@ var (
 
 const (
 	// for restart
-	EnvVarInheritedListener = "inherited_listener"
+	EnvVarInheritedListenerHttp = "inherited_listener_http"
+	EnvVarInheritedListenerTcp  = "inherited_listener_tcp"
 
 	ContextVarResponseFilter = "__response_filter__"
 
@@ -70,6 +71,12 @@ const (
 	ErrCodeBackendRequestFail  = 117
 	ErrMsgBackendRequestFail   = "backend %s request fail, %s"
 	ErrCodeCommonError         = 118
+	ErrCodeNewUpstream         = 119
+	ErrMsgNewUpstream          = "new upstream fail, %s"
+	ErrCodeUpstreamDup         = 120
+	ErrMsgUpstreamDup          = "upstream: %s duplicated"
+	ErrCodeNewTcpServerFail    = 121
+	ErrMsgNewTcpServerFail     = "new tcp server fail, %s"
 )
 
 const (
@@ -85,6 +92,11 @@ const (
 	CfgLogDir                        = "log_dir"
 	CfgLogLevel                      = "log_level"
 	CfgInclude                       = "include"
+	CfgUpstream                      = "upstream"
+	CfgUpstreamAlias                 = "alias"
+	CfgUpstreamMethod                = "method"
+	CfgUpstreamBackendList           = "backend_list"
+	CfgUpstreamConnTimeout           = "connect_timeout"
 	CfgBackendGroup                  = "backend_group"
 	CfgBackendDef                    = "backend_def"
 	CfgBackendDefAlias               = "alias"
@@ -113,6 +125,10 @@ const (
 	CfgServerLocationJsonexpExp            = "exp"
 	CfgServerLocationJsonexpRequestFilter  = "request_filter"
 	CfgServerLocationJsonexpResponseFilter = "response_filter"
+
+	CfgTcpServer         = "tcp_server"
+	CfgTcpServerListen   = "listen"
+	CfgTcpServerUpstream = "upstream"
 )
 
 var MimeTypeMap map[string]string = map[string]string{
