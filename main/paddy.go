@@ -32,7 +32,11 @@ func main() {
 	flag.Parse()
 
 	if *testConfigFile != "" {
-		validateConfigFile(*testConfigFile)
+		if s := validateConfigFile(*testConfigFile); s != "" {
+			println(s)
+		} else {
+			fmt.Printf("the configuration file %s is ok\n", *testConfigFile)
+		}
 		return
 	}
 
@@ -72,18 +76,17 @@ func main() {
 	<-c
 }
 
-func validateConfigFile(fn string) {
+func validateConfigFile(fn string) (errString string) {
 	if fn, err := filepath.Abs(fn); err != nil {
-		fmt.Println(err.Error())
+		return fmt.Sprintln(err.Error())
 	} else {
 		_, err := paddy.NewPaddy(fn)
 		if err.Code != paddy.ErrCodeNoError {
-			fmt.Printf("config file invalid: %s\n", err.Error())
+			return fmt.Sprintf("config file invalid: %s\n", err.Error())
 		} else {
-			fmt.Printf("the configuration file %s is ok\n", fn)
+			return ""
 		}
 	}
-
 }
 
 func ReSetLogConf() {
@@ -189,6 +192,10 @@ func signalDef() {
 }
 
 func restartProcess() (err error) {
+	if s := validateConfigFile(instance.GetConfigFile()); s != "" {
+		glog.Errorln(s)
+		return fmt.Errorf(err.Error())
+	}
 	argv0, err := exec.LookPath(os.Args[0])
 	if err != nil {
 		return err
