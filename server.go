@@ -413,7 +413,7 @@ func NewPaddy(configFile string) (*Paddy, goutil.Error) {
 	ret.init()
 	ret.configFile = configFile
 	loadedMap := make(map[string]bool)
-	err := ret.loadConfig(configFile, true, loadedMap)
+	err := ret.loadConfig("", configFile, true, loadedMap)
 	if err.Code != ErrCodeNoError {
 		return nil, err
 	}
@@ -687,7 +687,12 @@ func (m *Paddy) doBackend(proxyPass string, backend string, r *http.Request, con
 	}
 }
 
-func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string]bool) goutil.Error {
+func (m *Paddy) loadConfig(configDir string, configFile string, rootCfg bool, loadedMap map[string]bool) goutil.Error {
+	if configDir != "" && !filepath.IsAbs(configFile) {
+		configFile = filepath.Join(configDir, configFile)
+	} else {
+		configFile, _ = filepath.Abs(configFile)
+	}
 	if ok := loadedMap[configFile]; ok {
 		return goutil.NewError(ErrCodeCommonError, "circular config "+configFile)
 	}
@@ -724,7 +729,7 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 		files := includeFiles.([]interface{})
 		for _, v := range files {
 			vStr := goutil.GetStringValue(v)
-			gErr := m.loadConfig(vStr, false, loadedMap)
+			gErr := m.loadConfig(filepath.Dir(configFile), vStr, false, loadedMap)
 			if gErr.Code != ErrCodeNoError {
 				return gErr
 			}
@@ -786,7 +791,7 @@ func (m *Paddy) loadConfig(configFile string, rootCfg bool, loadedMap map[string
 		if rv := reflect.ValueOf(server); rv.Kind() != reflect.Map {
 			return goutil.NewErrorf(ErrCodeCfgItemInvalid, ErrMsgCfgItemInvalid, CfgServer)
 		}
-		if gErr := m.newVirtualServer(server.(map[string]interface{})); gErr.Code != ErrCodeNoError {
+		if gErr := m.newVirtualServer(filepath.Dir(configFile), server.(map[string]interface{})); gErr.Code != ErrCodeNoError {
 			return gErr
 		}
 	}
@@ -897,7 +902,7 @@ func (m *Paddy) newTcpServer(cfg map[string]interface{}) goutil.Error {
 
 }
 
-func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
+func (m *Paddy) newVirtualServer(configDir string, cfg map[string]interface{}) goutil.Error {
 	if cfg == nil {
 		return goutil.NewErrorf(ErrCodeNewTcpServerFail, "cfg map is nil")
 	}
@@ -955,10 +960,14 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 		if rv := reflect.ValueOf(cert); rv.Kind() != reflect.String || cert.(string) == "" {
 			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerTlsCert)
 		}
-		if !goutil.FileExists(cert.(string)) {
+		fn := cert.(string)
+		if configDir != "" && !filepath.IsAbs(fn) {
+			fn = filepath.Join(configDir, fn)
+		}
+		if !goutil.FileExists(fn) {
 			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerTlsCert)
 		}
-		vs.tlsCert = cert.(string)
+		vs.tlsCert = fn
 	}
 
 	// tls_certkey
@@ -966,10 +975,14 @@ func (m *Paddy) newVirtualServer(cfg map[string]interface{}) goutil.Error {
 		if rv := reflect.ValueOf(cert); rv.Kind() != reflect.String || cert.(string) == "" {
 			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerTlsCertKey)
 		}
-		if !goutil.FileExists(cert.(string)) {
+		fn := cert.(string)
+		if configDir != "" && !filepath.IsAbs(fn) {
+			fn = filepath.Join(configDir, fn)
+		}
+		if !goutil.FileExists(fn) {
 			return goutil.NewErrorf(ErrCodeCfgItem2Invalid, ErrMsgCfgItem2Invalid, CfgServer, CfgServerTlsCertKey)
 		}
-		vs.tlsCertKey = cert.(string)
+		vs.tlsCertKey = fn
 	}
 
 	// location_regexp
