@@ -6,6 +6,9 @@
 *.dylib
 main/paddy
 paddy
+*.pem
+*.key
+*.pid
 
 # Test binary, built with `go test -c`
 *.test
