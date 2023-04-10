@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"fmt"
+	"github.com/truexf/goutil"
 	"io"
 	"net/http"
 	"sync"
@@ -34,6 +35,6 @@ func TestUpstream(t *testing.T) {
 	} else {
 		bts, _ := io.ReadAll(resp.Body)
 		fmt.Println(resp.Status)
-		fmt.Println(string(bts))
+		fmt.Println(goutil.UnsafeBytesToString(bts))
 	}
 }

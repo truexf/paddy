@@ -6,6 +6,7 @@ package paddy
 
 import (
 	"fmt"
+	"github.com/truexf/goutil"
 	"io"
 	"net"
 	"net/http"
@@ -66,7 +67,7 @@ func TestResponseDirected(t *testing.T) {
 	} else {
 		bts, _ := io.ReadAll(resp.Body)
 		fmt.Println(resp.Status)
-		fmt.Println(string(bts))
+		fmt.Println(goutil.UnsafeBytesToString(bts))
 	}
 }
 
@@ -79,7 +80,7 @@ func TestProxyPass(t *testing.T) {
 	} else {
 		bts, _ := io.ReadAll(resp.Body)
 		fmt.Println(resp.Status)
-		fmt.Println(string(bts))
+		fmt.Println(goutil.UnsafeBytesToString(bts))
 	}
 }
 
@@ -92,7 +93,7 @@ func TestBackend(t *testing.T) {
 	} else {
 		bts, _ := io.ReadAll(resp.Body)
 		fmt.Println(resp.Status)
-		fmt.Println(string(bts))
+		fmt.Println(goutil.UnsafeBytesToString(bts))
 	}
 }
 
@@ -105,7 +106,7 @@ func TestFileRoot(t *testing.T) {
 	} else {
 		bts, _ := io.ReadAll(resp.Body)
 		fmt.Println(resp.Status)
-		fmt.Println(string(bts))
+		fmt.Println(goutil.UnsafeBytesToString(bts))
 	}
 }
 
@@ -139,7 +140,7 @@ func TestUpstream(t *testing.T) {
 		t.Fatal(err.Error())
 	}
 	for i := 0; i < 10; i++ {
-		if _, err := conn.Write([]byte(fmt.Sprintf("ping %d\n", i))); err != nil {
+		if _, err := conn.Write(goutil.UnsafeStringToBytes(fmt.Sprintf("ping %d\n", i))); err != nil {
 			t.Fatal(err.Error())
 		}
 	}
@@ -147,7 +148,7 @@ func TestUpstream(t *testing.T) {
 	if n, err := conn.Read(ret); err != nil {
 		t.Fatal(err.Error())
 	} else {
-		fmt.Println(string(ret[:n]))
+		fmt.Println(goutil.UnsafeBytesToString(ret[:n]))
 	}
 }
 

@@ -25,7 +25,7 @@ func (m *DemoPlugin) ID() string {
 func (m *DemoPlugin) RequestHeaderCompleted(req *http.Request, respWriter http.ResponseWriter, context goutil.Context) (hijacked bool, proxyPass, backend string, err goutil.Error) {
 	if req.URL.Path == "/ping" {
 		respWriter.WriteHeader(200)
-		respWriter.Write([]byte("pong"))
+		respWriter.Write(goutil.UnsafeStringToBytes("pong"))
 		return true, "", "", paddy.ErrorNoError
 	} else {
 		return false, "", "", paddy.ErrorNoError

@@ -92,7 +92,7 @@ func validateConfigFile(fn string) (errString string) {
 func ReSetLogConf() {
 	configMap := make(map[string]interface{})
 	if bts, err := os.ReadFile(getConfigFile()); err == nil {
-		if err := json.Unmarshal([]byte(paddy.TrimJsonComment(string(bts))), &configMap); err == nil {
+		if err := json.Unmarshal(goutil.UnsafeStringToBytes(paddy.TrimJsonComment(goutil.UnsafeBytesToString(bts))), &configMap); err == nil {
 			if logDir, ok := configMap[paddy.CfgLogDir]; ok {
 				logDirStr := goutil.GetStringValue(logDir)
 				if goutil.FilePathExists(logDirStr) {

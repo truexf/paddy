@@ -235,7 +235,7 @@ func (m *PaddyHandler) pluginRequestAdapter(plugin Plugin, req *http.Request, re
 			n := runtime.Stack(buf, true)
 			if n > 0 {
 				buf = buf[:n]
-				glog.Errorln(string(buf))
+				glog.Errorln(goutil.UnsafeBytesToString(buf))
 			} else {
 				glog.Errorln("no stack trace")
 			}
@@ -253,7 +253,7 @@ func (m *PaddyHandler) pluginResponseAdapter(plugin Plugin, originResponse *http
 			n := runtime.Stack(buf, true)
 			if n > 0 {
 				buf = buf[:n]
-				glog.Errorln(string(buf))
+				glog.Errorln(goutil.UnsafeBytesToString(buf))
 			} else {
 				glog.Errorln("no stack trace")
 			}
@@ -273,7 +273,7 @@ type Upstream struct {
 func (m *PaddyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !m.paddy.ready {
 		w.WriteHeader(500)
-		w.Write([]byte("not ready"))
+		w.Write(goutil.UnsafeStringToBytes("not ready"))
 		return
 	}
 	context := &goutil.DefaultContext{}
@@ -704,7 +704,7 @@ func (m *Paddy) loadConfig(configDir string, configFile string, rootCfg bool, lo
 	if err != nil {
 		return goutil.NewErrorf(ErrCodeConfigReadFail, ErrMsgConfigReadFail, configFile, err.Error())
 	}
-	bts = []byte(TrimJsonComment(string(bts)))
+	bts = []byte(TrimJsonComment(goutil.UnsafeBytesToString(bts)))
 	cfgMap := make(map[string]interface{})
 	err = json.Unmarshal(bts, &cfgMap)
 	if err != nil {
@@ -1513,7 +1513,7 @@ func (m *Paddy) StartListen() goutil.Error {
 	// write pid file
 	if m.pidFile != "" {
 		pid := os.Getpid()
-		if err := ioutil.WriteFile(m.pidFile, []byte(fmt.Sprintf("%d", pid)), 0666); err != nil {
+		if err := ioutil.WriteFile(m.pidFile, goutil.UnsafeStringToBytes(fmt.Sprintf("%d", pid)), 0666); err != nil {
 			glog.Errorf("write pid file fail, %s", err.Error())
 		} else {
 			glog.Infof("write pid %d to %s\n", pid, m.pidFile)
